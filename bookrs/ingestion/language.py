@@ -30,6 +30,15 @@ MARCXML_NS = "http://www.loc.gov/MARC21/slim"
 # than embedding "und" in a corpus as though it were a language.
 NON_LANGUAGE = frozenset({"und", "mul", "zxx", "sgn", "xxx", "mis"})
 
+# KNOWN LIMITATION: this is a subset, not the full MARC 21 list (~490
+# codes). It covers everything in the reference corpus plus common
+# languages, and an unlisted code falls through to the caller's
+# configured default rather than corrupting anything -- but a library
+# holding material in an uncovered language would silently lose that
+# signal. Before any real deployment, replace this with the Library of
+# Congress list loaded from a data file:
+# https://www.loc.gov/standards/codelists/languages.xml
+#
 # MARC 21 language codes. This is deliberately not ISO 639-2: the
 # Library of Congress list retains deprecated codes that remain in
 # circulation, and the reference corpus contains both the deprecated and
