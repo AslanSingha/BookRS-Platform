@@ -5,7 +5,9 @@ Every fixture is a real value observed in a Koha MARC21 corpus.
 
 import pytest
 
-from bookrs.ingestion.normalize import clean_isbn, join_title, strip_isbd
+from bookrs.ingestion.normalize import (
+    clean_isbn, join_title, strip_isbd, strip_nonfiling,
+)
 
 
 class TestStripISBD:
@@ -80,3 +82,39 @@ class TestJoinTitle:
 
     def test_no_parts(self):
         assert join_title([]) == ""
+
+
+class TestStripNonfiling:
+    """UNIMARC brackets the non-filing article -- the part a catalogue
+    ignores when sorting. 367 of 4,849 records in the reference corpus.
+    MARC21 uses the 245 second indicator instead and has none."""
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("[L']aurore des bien-aimés", "L'aurore des bien-aimés"),
+        ("[Un ]gâchis", "Un gâchis"),          # space inside the bracket
+        ("[Les ]drogues", "Les drogues"),
+        ("[La ]tunique d'infamie", "La tunique d'infamie"),
+    ])
+    def test_unwraps_leading_article(self, raw, expected):
+        assert strip_nonfiling(raw) == expected
+
+    @pytest.mark.parametrize("title", [
+        "On the corner : [Sound recording]",
+        "DOA - Dead Or Alive [DVD] [2006]",
+        "Doctor who - the caves of androzani [1984] [dvd] [1963]",
+    ])
+    def test_mid_title_brackets_are_content(self, title):
+        """MARC21 medium designators must survive."""
+        assert strip_nonfiling(title) == title
+
+    def test_untouched_when_no_bracket(self):
+        assert strip_nonfiling("The C programming language") == \
+            "The C programming language"
+
+    def test_long_bracketed_phrase_is_not_an_article(self):
+        """Non-filing articles are short; a long phrase is real content."""
+        t = "[a very long bracketed phrase here] title"
+        assert strip_nonfiling(t) == t
+
+    def test_empty(self):
+        assert strip_nonfiling("") == ""

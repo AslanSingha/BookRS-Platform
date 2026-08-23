@@ -60,6 +60,32 @@ def clean_isbn(value: str) -> str | None:
     return value if len(value) in (10, 13) else None
 
 
+# A leading bracket in a title marks the non-filing article -- the part
+# a catalogue ignores when sorting. UNIMARC records it this way (367 of
+# 4,849 in the reference corpus: "[L']aurore des bien-aimes",
+# "[Un ]gachis"), while MARC21 uses the 245 second indicator instead and
+# has none. The brackets are a sorting convention, not content: they are
+# noise to an embedding model and wrong to display.
+#
+# Only a LEADING bracket is treated this way. Mid-title brackets are
+# real content -- "On the corner : [Sound recording]", "Doctor who ...
+# [DVD] [2006]" -- and stripping those would destroy information.
+_NONFILING = re.compile(r"^\[([^\]]{0,12})\]")
+
+
+def strip_nonfiling(title: str) -> str:
+    """Remove non-filing brackets, keeping the article inside them.
+
+    The space may sit either inside or outside the bracket depending on
+    the article, so both characters are removed and everything else
+    kept: "[Un ]gachis" -> "Un gachis", "[L\']aurore" -> "L\'aurore".
+
+    The length bound keeps this from matching a bracketed phrase that
+    happens to lead a title; non-filing articles are short.
+    """
+    return _NONFILING.sub(r"\1", title, count=1).lstrip()
+
+
 def join_title(parts: list[str], separator: str = " : ") -> str:
     """Assemble a title from its subfields.
 

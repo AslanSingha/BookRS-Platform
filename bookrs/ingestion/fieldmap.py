@@ -19,7 +19,9 @@ from xml.etree import ElementTree as ET
 
 from bookrs.ingestion.flavour import Flavour
 from bookrs.ingestion.language import detect_languages
-from bookrs.ingestion.normalize import clean_isbn, join_title, strip_isbd
+from bookrs.ingestion.normalize import (
+    clean_isbn, join_title, strip_isbd, strip_nonfiling,
+)
 
 import hashlib
 
@@ -27,6 +29,23 @@ MARCXML_NS = "http://www.loc.gov/MARC21/slim"
 OAI_NS = "http://www.openarchives.org/OAI/2.0/"
 
 log = logging.getLogger(__name__)
+
+# Bump when extraction changes in a way that alters the Work produced
+# from an unchanged source record: a corrected subfield, a new
+# normalisation rule, an added field.
+#
+# The content hash covers the MARC record, not our interpretation of it.
+# Without this in the hash, a library's records would keep whatever
+# extraction was current when they were first harvested, and a mapping
+# fix would never reach them -- the source is unchanged, so the hash
+# matches and the loader correctly skips the rewrite. Observed with the
+# non-filing-bracket fix: 4,849 records reported unchanged while every
+# extracted title had in fact changed.
+#
+# History:
+#   1  initial
+#   2  strip non-filing brackets from titles (UNIMARC "[L\']aurore")
+MAPPER_VERSION = 2
 
 # 'c1993.' is a copyright date and the commonest form in the reference
 # corpus (91 of 411). \b does not match between 'c' and '1', so a digit
@@ -234,7 +253,9 @@ def _content_hash(marc_record: ET.Element, item_tag: str) -> str:
     canonical = ET.canonicalize(
         ET.tostring(clone, encoding="unicode"), strip_text=True
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        f"v{MAPPER_VERSION}\n{canonical}".encode("utf-8")
+    ).hexdigest()
 
 
 def _items_hash(marc_record: ET.Element, item_tag: str) -> str:
@@ -251,7 +272,9 @@ def _items_hash(marc_record: ET.Element, item_tag: str) -> str:
     canonical = ET.canonicalize(
         ET.tostring(clone, encoding="unicode"), strip_text=True
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        f"v{MAPPER_VERSION}\n{canonical}".encode("utf-8")
+    ).hexdigest()
 
 
 def _extract_year(value: str) -> int | None:
@@ -269,7 +292,7 @@ def map_record(marc_record: ET.Element, flavour: Flavour,
     tag, codes = fm.title
     for field in _fields(marc_record, tag):
         if parts := _subfields(field, codes):
-            work.title = join_title(parts)
+            work.title = strip_nonfiling(join_title(parts))
             work.provenance["title"] = f"{tag}${''.join(codes)}"
             used.add(tag)
             break
