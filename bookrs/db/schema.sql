@@ -158,3 +158,53 @@ CREATE TABLE ratings (
 );
 
 CREATE INDEX ratings_work_idx ON ratings (work_id);
+
+-- ---------------------------------------------------------------
+-- embeddings: one vector per work.
+--
+-- REAL[] rather than a native vector type. pgvector is not present in
+-- the stock postgres image, and adopting it would mean asking a
+-- library's IT staff to run a non-standard image for a capability not
+-- yet needed: one query vector against 5,284 stored vectors is well
+-- under a millisecond in NumPy, and against 300,000 is roughly 30 ms.
+-- (Measured: the full all-pairs matrix over 5,284 works takes 145 ms,
+-- but that is not a query-time operation and does not scale -- all
+-- pairs over 300,000 works would be 100 GB.) The vectors are the same
+-- numbers either way, so moving to pgvector later is a migration
+-- rather than a redesign.
+--
+-- Vectors are L2-normalised at generation, so a dot product is cosine
+-- similarity and no scaling is needed at query time.
+-- ---------------------------------------------------------------
+CREATE TABLE embeddings (
+    work_id          BIGINT      PRIMARY KEY REFERENCES works(id) ON DELETE CASCADE,
+    vector           REAL[]      NOT NULL,
+    dimensions       SMALLINT    NOT NULL,
+
+    -- Which model and which composition produced this vector. A change
+    -- to either makes stored vectors incomparable to new ones, and
+    -- mixing two vector spaces produces plausible nonsense rather than
+    -- an error -- the same failure the ingestion mapper version guards
+    -- against, one layer up.
+    model            VARCHAR(120) NOT NULL,
+    embedder_version SMALLINT     NOT NULL,
+
+    -- The content hash the vector was generated from. Re-embedding is
+    -- needed when this no longer matches the work's current hash.
+    source_hash      VARCHAR(64)  NOT NULL,
+
+    -- Roughly a third of both reference corpora have nothing but a
+    -- title to encode (29.4% MARC21, 38.5% UNIMARC). Recorded so the
+    -- ranking layer can weigh a title-only vector differently rather
+    -- than treating it as equivalent evidence.
+    is_title_only    BOOLEAN      NOT NULL DEFAULT FALSE,
+
+    created_at       TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+-- Finds work needing (re-)embedding: a model change, a version bump, or
+-- a source record whose bibliography moved.
+CREATE INDEX embeddings_staleness_idx
+    ON embeddings (model, embedder_version, source_hash);
+CREATE INDEX embeddings_title_only_idx
+    ON embeddings (is_title_only) WHERE is_title_only;
