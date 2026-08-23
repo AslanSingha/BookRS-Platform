@@ -15,6 +15,7 @@ services:
       - db-data:/var/lib/postgresql/data
       # Applied automatically on first start of an empty volume.
       - ./bookrs/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./bookrs/db/test-db.sh:/docker-entrypoint-initdb.d/00-test-db.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U bookrs -d bookrs"]
       interval: 3s
@@ -36,6 +37,8 @@ services:
       # Operator-supplied. Never derived from the repository's own
       # advertised baseURL, which Koha reports incorrectly.
       DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs"
+      # Separate database: the loader tests truncate every table.
+      TEST_DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs_test"
       OAI_BASE_URL: "${OAI_BASE_URL:-http://host.docker.internal:8080/cgi-bin/koha/oai.pl}"
     volumes:
       # Bind-mounted during development so edits apply without rebuilding.

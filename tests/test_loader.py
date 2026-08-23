@@ -15,13 +15,17 @@ psycopg = pytest.importorskip("psycopg")
 from bookrs.db.loader import ensure_source, load_works
 from bookrs.ingestion.fieldmap import Flavour, Item, Work
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+# Deliberately NOT DATABASE_URL. These tests truncate every table, so
+# pointing them at the development database would silently destroy a
+# loaded catalogue on any `pytest` run. TEST_DATABASE_URL must be set
+# explicitly and must name a throwaway database.
+DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
 
 @pytest.fixture
 def conn():
     if not DATABASE_URL:
-        pytest.skip("DATABASE_URL not set")
+        pytest.skip("TEST_DATABASE_URL not set")
     try:
         connection = psycopg.connect(DATABASE_URL, connect_timeout=3)
     except psycopg.OperationalError:
