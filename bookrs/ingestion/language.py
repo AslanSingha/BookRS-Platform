@@ -85,8 +85,14 @@ def _valid(codes: list[str]) -> list[str]:
     return seen
 
 
-def detect_languages(marc_record: ET.Element) -> tuple[list[str], str | None]:
-    """Return ``(codes, source)`` for a MARC21 record.
+def detect_languages(marc_record: ET.Element,
+                     flavour: "Flavour | None" = None) -> tuple[list[str], str | None]:
+    """Return ``(codes, source)`` for a MARC record.
+
+    UNIMARC has no 008 and no 041; language lives in 101$a, present on
+    392 of 400 records in the UNIMARC reference corpus. Values there are
+    mixed-case ("Fre" and "fre" both occur in the same catalogue), which
+    the shared chunking already normalises.
 
     The first code is the primary language. ``source`` names the field
     the codes came from, or is None when neither field yielded anything
@@ -94,6 +100,18 @@ def detect_languages(marc_record: ET.Element) -> tuple[list[str], str | None]:
     default rather than guess.
     """
     ns = f"{{{MARCXML_NS}}}"
+
+    # Flavour is optional so callers without one still work: 101, 041
+    # and 008 do not collide, so trying all three is safe.
+    from_101: list[str] = []
+    for field in marc_record.findall(f"{ns}datafield"):
+        if field.get("tag") != "101":
+            continue
+        for sub in field.findall(f"{ns}subfield"):
+            if sub.get("code") == "a":
+                from_101.extend(_chunk(sub.text or ""))
+    if codes := _valid(from_101):
+        return codes, "101$a"
 
     from_041: list[str] = []
     for field in marc_record.findall(f"{ns}datafield"):
