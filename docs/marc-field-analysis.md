@@ -11,8 +11,9 @@ Sections 2–9 describe a **MARC21** instance. Section 10 describes a
 parallel **UNIMARC** instance and the cross-flavour findings, which
 include the highest-severity issue in this document (§10.2).
 Section 11 covers patron ratings, which require a separate read
-channel from OAI-PMH. Section 12 records two operational findings that
-arose from mistakes made while building against these instances.
+channel from OAI-PMH. Section 12 records operational findings that arose
+from mistakes made while building against these instances — several of
+which produced plausible output rather than errors.
 
 ---
 
@@ -485,6 +486,36 @@ meaningful for a given item.
 Status flags `$0/$1/$4/$7` were all `0` across the sample — every item
 available and lendable. Real catalogues will not be this uniform.
 
+### 8.3 Cross-flavour item subfield map
+
+Measured against both corpora (961 MARC21 items, 1,633 UNIMARC items
+sampled). The letters differ for the same concept, and two collide
+outright.
+
+| Concept | MARC21 `952` | UNIMARC `995` |
+|---|---|---|
+| Barcode | `$p` | `$f` |
+| Owning branch | `$a` | **`$c`** |
+| Holding branch | `$b` | `$b` |
+| Shelving location | **`$c`** | `$e` |
+| Call number | *(absent)* | `$k` (100%) |
+| Item type | `$y` | **`$r`** |
+| Due date / on loan | `$q` | `$n` |
+| Cumulative issues | `$l` | *(absent)* |
+| Date acquired | `$d` | `$5` |
+| Serial enumeration | — | `$v` |
+
+> **Two collisions worth naming.** `$c` is the shelving location in
+> MARC21 and the owning branch in UNIMARC. `$r` is a timestamp
+> (datelastseen) in MARC21 and the **item type** in UNIMARC. Reusing one
+> subfield map across flavours would store `2014-05-07 00:00:00` in the
+> item_type column and raise nothing — the same silent-corruption shape
+> as the tag-level collisions of §10.2, one layer down.
+
+Both maps were written from the specification first and both were wrong
+until measured. The specification describes what a subfield *means*;
+only the data shows what a given system actually puts there.
+
 ---
 
 ## 9. Circulation state — the sync-design finding
@@ -553,7 +584,7 @@ popularity signal — directly relevant to the confidence-formula work,
 and to any popularity-based cold-start stage, which otherwise has no
 `avg_rating` or `ratings_count` equivalent in library data.
 
-> **Availability caveat — see §10.8.** This subfield has **no
+> **Availability caveat — see §10.9.** This subfield has **no
 > counterpart in Koha's default UNIMARC framework**. A checkout on the
 > UNIMARC instance produced only a due date, no counter. Any design that
 > depends on `$l` must degrade gracefully where it is absent, which
@@ -702,7 +733,47 @@ The one real difference is `330` at 16.1% versus `520` at 8.9%.
 Different corpora, so not a controlled comparison, but consistent with
 European cataloguing practice including abstracts more often.
 
-### 10.6 Language codes — the same problems, plus case
+### 10.6 Duplicate records — a single catalogue is not duplicate-free
+
+An earlier working assumption held that a single professionally-managed
+catalogue would not contain meaningful duplication, unlike crowdsourced
+data. That is too strong.
+
+**52 ISBNs in the UNIMARC corpus are shared by 111 works** — 2.3% of the
+catalogue. One shared ISBN in the MARC21 corpus. Inspection confirms
+these are genuine duplicate records rather than distinct works:
+
+```
+ISBN 2234011752
+  KOHA-OAI-TEST:185   "La femme des sables"  Abe Kobo  1990  Stock
+  KOHA-OAI-TEST:997   "La femme des sables"  Abe Kobo  1990  Stock
+```
+
+One pair is more instructive than the identical ones:
+
+```
+ISBN 2081603810
+  KOHA-OAI-TEST:343   "Le beau chardon d'Ali Boron"   Flammarion
+  KOHA-OAI-TEST:2245  "Le beau chardond'Ali Boron"    Garnier-Flammarion
+```
+
+Same book, a missing space in the title, and the publisher recorded two
+different ways. **A title+author key would treat these as distinct
+works; the ISBN catches them.** That is direct evidence for ISBN-first
+entity resolution rather than the title-normalisation approach, and it
+was previously argued from first principles alone.
+
+> **Schema consequence.** ISBN is the entity-resolution key but cannot
+> be a uniqueness constraint. It is indexed; merging belongs in
+> application code, where the ambiguous cases can be judged.
+
+Scope this honestly: 2.3% is far lighter than crowdsourced duplication,
+and entity resolution here remains a light sanity check rather than the
+heavy deduplication pass the thesis dataset required. But it is not
+zero, and a design that assumed zero would leave duplicate works with
+split circulation signal.
+
+### 10.7 Language codes — the same problems, plus case
 
 `101$a` values across 4,849 records:
 
@@ -724,7 +795,7 @@ bed for the configurable-embedding-model decision:
 `all-MiniLM-L6-v2` applied here would produce near-noise embeddings for
 3,673 records.
 
-### 10.7 Instance identity is not self-namespacing
+### 10.8 Instance identity is not self-namespacing
 
 Both instances report `OAI-PMH:archiveID = KOHA-OAI-TEST` — the shipped
 default. Both therefore emit `KOHA-OAI-TEST:1` as the identifier for
@@ -734,7 +805,7 @@ entirely different records.
 > configured source, not by the identifier prefix. The prefix is an
 > operator-set default that libraries frequently leave unchanged.
 
-### 10.8 Items under UNIMARC — field 995, not 952
+### 10.9 Items under UNIMARC — field 995, not 952
 
 Enabling `include_items: 1` on the UNIMARC instance (same conf file,
 same path — `KOHA_INSTANCE` remains `kohadev` regardless of the
@@ -782,7 +853,7 @@ Mapping against MARC21:
 > applies one layer down: the `items` table needs a per-flavour subfield
 > map, not just a per-flavour tag map.
 
-### 10.9 Circulation under UNIMARC — what generalises and what doesn't
+### 10.10 Circulation under UNIMARC — what generalises and what doesn't
 
 Same experiment as §9.1: item `bc_1` (item type `CR`, a periodical
 issue) checked out via the staff interface to patron 45, due
@@ -963,6 +1034,93 @@ This is the same class of error as the ID-space mismatch that motivated
 §4: an assumption about data format that looks obviously true, is
 never checked, and fails silently rather than loudly.
 
+### 12.3 Attribute order is nondeterministic — canonicalise before hashing
+
+§12.2 records that Koha emits single-quoted attributes in inconsistent
+order, as a reason not to use regular expressions. There is a second and
+sharper consequence.
+
+Two consecutive `GetRecord` calls for the same unmodified record
+returned **identical byte counts with the attributes in different
+sequence**:
+
+```
+a: <datafield tag='020' ind2=' ' ind1=' '>
+b: <datafield ind2=' ' tag='020' ind1=' '>
+```
+
+This is Perl hash iteration order surfacing in the output, and it varies
+per worker process rather than per request — so it is intermittent,
+which is worse than constant. `ElementTree` preserves the order
+faithfully, so `tostring()` produces different bytes for identical
+content.
+
+Any hash used to detect whether a record has changed is therefore
+meaningless unless the serialisation is canonical. Without it, every
+record hashes differently on every harvest, a nightly sync rewrites the
+entire catalogue and re-embeds it, and **nothing about the system
+appears to be failing**. The first full load reported 436 updates where
+it should have reported 436 unchanged.
+
+> **Requirement.** Canonicalise (C14N — `ET.canonicalize`, which sorts
+> attributes and normalises namespaces) before hashing. Verified stable
+> across 436 records over two full harvests spanning 18 requests and
+> multiple worker processes.
+
+### 12.4 Two hashes, not one
+
+A single content hash forces a choice between two failures. Circulation
+bumps a record's OAI datestamp without changing its bibliography
+(§9.2), so a hash covering the whole record re-embeds the catalogue on
+every loan; a hash excluding holdings leaves availability stale between
+full syncs.
+
+Keeping them separate — one over the bibliography, one over the 952/995
+block — lets each change independently. Verified by putting two items on
+loan: the following harvest reported 436 works unchanged (no
+re-embedding) and exactly 2 works with refreshed holdings, writing 3
+item rows, since one of the two works has two copies.
+
+### 12.5 Fixed-width character types compare unequally in application code
+
+Not a MARC finding, but the same class of failure and it cost real time.
+
+PostgreSQL pads `CHAR(n)` to its declared width and the driver returns
+the padding. The value therefore compares **equal in SQL and unequal in
+Python**:
+
+```
+SELECT length(h), h = 'hash-a' FROM t   ->   6, true
+python: repr(h) -> 'hash-a' + 58 spaces
+        h == 'hash-a' -> False
+```
+
+`content_hash CHAR(64)` worked in production data only because SHA-256
+digests are exactly 64 characters and fill the column. A shorter value
+would silently never match, and every record would look modified
+forever — the same symptom as §12.3, from an unrelated cause.
+`languages CHAR(3)` had the same latent problem: MARC codes are three
+characters, but malformed two-character ISO 639-1 codes occur in real
+data (`ru` appears in the reference corpus).
+
+> **Requirement.** Use `VARCHAR` for any value compared in application
+> code. Fixing the type rather than stripping at every read, because
+> stripping relies on every future caller remembering to.
+
+### 12.6 A test suite that can reach the development database
+
+The loader tests read `DATABASE_URL` and begin with
+`TRUNCATE ... CASCADE`, so running the suite after a load silently
+destroyed the catalogue. It surfaced only as a one-row discrepancy —
+5,286 works where 436 + 4,849 is 5,285 — from a fixture row left by the
+last test to run. Earlier runs looked correct because a reload always
+happened to follow.
+
+The suite now requires a separate `TEST_DATABASE_URL`, deliberately a
+different variable rather than a different default. A test suite that
+can reach real data through an ambient environment variable is a hazard
+whether or not it currently does.
+
 ---
 
 ## 13. Limitations of this analysis
@@ -978,13 +1136,14 @@ Stated plainly, because these bound what the findings support:
    older stable releases is untested — relevant because `marc21` as a
    metadata prefix only became available in 17.05 and was absent from
    the sample conf before 23.11.
-4. **Item coverage differs by flavour and by corpus.** MARC21 items
-   (§8) were measured across the full 436-record corpus; UNIMARC items
-   (§10.8) were profiled from **one page of 50 records only**, not the
-   full 4,849. The UNIMARC subfield percentages are therefore
-   provisional. The 995 corpus is also periodicals-heavy (18.2 items per
-   record), which is unlikely to be representative of a monograph
-   collection.
+4. **UNIMARC item percentages come from the head of the corpus.**
+   MARC21 items (§8) were measured across the full 436 records. UNIMARC
+   subfield coverage (§10.9, §8.3) was measured across the first 300
+   records, which are periodicals-heavy at 5.4 items each; the full
+   4,849 records yield 6,202 items, or 1.28 per work, because the tail
+   is single-copy monographs. Extrapolating from the head of a sorted
+   corpus was wrong by a factor of four when first attempted, and the
+   subfield percentages carry the same bias.
 5. **One circulation event tested per flavour.** Returns, renewals,
    holds, and deleted records were not exercised on either. The
    `deletedRecord: persistent` behaviour in particular remains
