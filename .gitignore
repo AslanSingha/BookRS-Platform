@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# Environment / secrets
+.env
+*.env
+!env/defaults.env
+
+# Node
+node_modules/
+dist/
+
+# Model artifacts (large binaries)
+/models/
+*.npy
+*.pkl
+
+# Harvested data / research artifacts
+/data/
+*.parquet
+*.csv
+*.gz
+page_*.xml
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
