@@ -59,7 +59,12 @@ CREATE TABLE works (
     authors          TEXT[]       NOT NULL DEFAULT '{}', -- max 15 per work
     subjects         TEXT[]       NOT NULL DEFAULT '{}', -- max 51 per work
     isbns            VARCHAR(13)[] NOT NULL DEFAULT '{}',-- max 9 per work
-    languages        CHAR(3)[]    NOT NULL DEFAULT '{}', -- max 3 per work
+    -- VARCHAR, not CHAR: PostgreSQL pads CHAR to its declared width and
+    -- the driver returns the padding, so a value shorter than the width
+    -- compares equal in SQL but unequal in Python. MARC language codes
+    -- are three characters, but malformed two-character ISO 639-1 codes
+    -- do occur in real catalogues.
+    languages        VARCHAR(3)[] NOT NULL DEFAULT '{}', -- max 3 per work
 
     -- Which MARC field each value came from. A wrong title is far
     -- easier to diagnose when the record says it came from 200$a.
@@ -71,13 +76,19 @@ CREATE TABLE works (
     -- re-embedding on datestamp alone would be enormously wasteful
     -- (docs section 9.2).
     marc_005         VARCHAR(20),
-    content_hash     CHAR(64),    -- bibliography only; governs re-embedding
+    -- VARCHAR for the same reason as languages above. A SHA-256 digest
+    -- is always 64 characters so production data would never trigger the
+    -- padding, but a column whose correctness depends on every value
+    -- exactly filling its width is a trap: any shorter value would
+    -- silently never match, and every record would look modified
+    -- forever.
+    content_hash     VARCHAR(64),  -- bibliography only; governs re-embedding
     -- Holdings only. Kept separate because the two change independently:
     -- a checkout moves the items and not the bibliography, and a
     -- catalogue correction does the reverse. One combined hash would
     -- either re-embed the catalogue on every loan or leave availability
     -- stale between full syncs.
-    items_hash       CHAR(64),
+    items_hash       VARCHAR(64),
 
     first_seen       TIMESTAMPTZ  NOT NULL DEFAULT now(),
     last_seen        TIMESTAMPTZ  NOT NULL DEFAULT now(),
