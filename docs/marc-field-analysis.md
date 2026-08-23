@@ -11,7 +11,8 @@ Sections 2–9 describe a **MARC21** instance. Section 10 describes a
 parallel **UNIMARC** instance and the cross-flavour findings, which
 include the highest-severity issue in this document (§10.2).
 Section 11 covers patron ratings, which require a separate read
-channel from OAI-PMH.
+channel from OAI-PMH. Section 12 records two operational findings that
+arose from mistakes made while building against these instances.
 
 ---
 
@@ -320,7 +321,7 @@ and it is **absent from 53 of 436 records**.
 | 264 | Publication (RDA) | 2.3% | 4 |
 | 880 | Alternate script | 0.2% | 1 |
 
-Full table available by re-running the profiling script (§13.2).
+Full table available by re-running the profiling script (§14.2).
 
 ### 5.2 Cataloguing-standard drift
 
@@ -567,7 +568,7 @@ A second instance was started with
 confirmed via `C4::Context->preference('marcflavour') == 'UNIMARC'`.
 Corpus: **4,849 records**, harvested in 97 pages.
 
-> The 100-page safety limit in the harvest script (§13.1) was nearly
+> The 100-page safety limit in the harvest script (§14.1) was nearly
 > reached by a *sample* corpus. A real library would blow straight
 > through it. The production adapter needs a generous bound or, better,
 > a time budget rather than a page count.
@@ -897,7 +898,74 @@ not scoped; recorded for later consideration.
 
 ---
 
-## 12. Limitations of this analysis
+## 12. Operational notes
+
+Two findings from building against these instances, both arising from
+mistakes made while doing so. Neither is a property of the OAI-PMH
+specification; both are properties of working with real deployments.
+
+### 12.1 A restart can silently drop OAI configuration
+
+The MARC21 instance was restarted mid-session. Afterwards:
+
+- `OAI-PMH` had reverted to `0` — endpoint returning 404
+- `OAI-PMH:ConfFile` was unset — no item output
+- The database was rebuilt from scratch (436 biblios, 961 items again,
+  but a fresh `earliestDatestamp`)
+
+In KTD this is by design: the database is ephemeral unless
+`--persistent-db` is passed. But the underlying exposure generalises.
+A library completing an upgrade, restoring from backup, or reverting a
+configuration change could reset the same preferences, and **the
+failure is quiet**. The endpoint still answers, `ListRecords` still
+returns 200, records still parse — they simply arrive without any 952
+or 995 holdings.
+
+An adapter that verified configuration only at setup would harvest
+bibliographic-only records indefinitely and discard every item, without
+raising anything.
+
+> **Adapter requirement.** At the start of **every** harvest run, not
+> only at setup: confirm the endpoint answers `Identify`, confirm the
+> requested prefix appears in `ListMetadataFormats`, and confirm the
+> expected item field (952 or 995, per detected flavour) is present in
+> the first page. If items were present on the previous run and are
+> absent now, stop and report rather than proceeding — a sudden loss of
+> holdings is far more likely to be a configuration regression than a
+> genuine emptying of the catalogue.
+
+### 12.2 Do not pattern-match MARC XML with regular expressions
+
+Koha emits attributes with **single quotes**:
+
+```xml
+<datafield ind1=" " tag='952' ind2=" ">
+```
+
+A `grep` for `tag="952"` returns zero matches against a response
+containing 93 item fields. Attribute **order** also varies between
+records (`ind1` before `tag` in some, after in others), and whitespace
+is inconsistent.
+
+Every `xml.etree.ElementTree` parse performed during this analysis was
+correct. Only ad-hoc shell patterns failed — and they failed by
+returning **zero**, which reads as a legitimate absence rather than a
+broken measurement.
+
+> **Adapter requirement.** All record content is read through an XML
+> parser. No regular expressions over MARC XML, including for quick
+> checks or diagnostics. The `<header>` count in the harvest script
+> (§14.1) is the sole exception: it counts a structural element in the
+> OAI envelope for progress reporting only, never record content, and
+> is not used for any decision.
+
+This is the same class of error as the ID-space mismatch that motivated
+§4: an assumption about data format that looks obviously true, is
+never checked, and fails silently rather than loudly.
+
+---
+
+## 13. Limitations of this analysis
 
 Stated plainly, because these bound what the findings support:
 
@@ -928,16 +996,20 @@ Stated plainly, because these bound what the findings support:
    confirmed but nothing about real rating density, distribution or
    patron uptake is known. The REST read path for them (§11.3) has not
    been exercised at all.
-7. **Both corpora are Koha sample data.** The UNIMARC set is larger
+7. **Findings in §12 are single incidents.** The configuration loss was
+   observed once, on an instance designed to be ephemeral. Whether real
+   Koha deployments lose OAI preferences on upgrade or restore is
+   untested and should not be assumed from this.
+8. **Both corpora are Koha sample data.** The UNIMARC set is larger
    (4,849) and so carries less sampling error than the MARC21 set, but
    it is still synthetic and skewed — 94.6% French, 8.6% sound
    recordings.
 
 ---
 
-## 13. Appendix — scripts
+## 14. Appendix — scripts
 
-### 13.1 Harvest loop
+### 14.1 Harvest loop
 
 ```bash
 #!/bin/bash
@@ -967,7 +1039,7 @@ Two production-relevant details: the token is URL-encoded because it
 contains slashes, and the safety stop prevents a malformed token from
 looping forever.
 
-### 13.2 Field profiling
+### 14.2 Field profiling
 
 The frequency table (§5.1) and coverage analysis (§6, §7) were produced
 by Python scripts using `xml.etree.ElementTree` against the harvested

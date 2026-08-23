@@ -19,3 +19,6 @@ services:
       # Bind-mounted during development so edits apply without rebuilding.
       - ./bookrs:/app/bookrs:ro
       - ./tests:/app/tests:ro
+      # Config lives at the image root; mount it so local edits apply
+      # without a rebuild, same as the source trees above.
+      - ./pytest.ini:/app/pytest.ini:ro
