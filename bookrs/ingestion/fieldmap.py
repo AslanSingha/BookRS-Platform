@@ -21,6 +21,8 @@ from bookrs.ingestion.flavour import Flavour
 from bookrs.ingestion.language import detect_languages
 from bookrs.ingestion.normalize import clean_isbn, join_title, strip_isbd
 
+import hashlib
+
 MARCXML_NS = "http://www.loc.gov/MARC21/slim"
 OAI_NS = "http://www.openarchives.org/OAI/2.0/"
 
@@ -40,6 +42,55 @@ _SUBDIVISION_SEP = " — "
 
 
 @dataclass
+class ItemMap:
+    """Item subfield assignments, measured against both corpora.
+
+    The letters differ between flavours for the same concept, and three
+    collide outright: $c is the shelving location in MARC21 but the
+    owning branch in UNIMARC, and $r is a timestamp in MARC21 but the
+    item type in UNIMARC. Reusing one map for both would silently store
+    a date in the item_type column.
+    """
+
+    barcode: str
+    owning_branch: str
+    holding_branch: str
+    location: str
+    call_number: str | None
+    item_type: str
+    due_date: str
+    issue_count: str | None
+
+
+MARC21_ITEM = ItemMap(barcode="p", owning_branch="a", holding_branch="b",
+                      location="c", call_number=None, item_type="y",
+                      due_date="q", issue_count="l")
+
+# $n carried a due date on 35 of 1,633 sampled items -- the only live
+# circulation state observed in either corpus.
+UNIMARC_ITEM = ItemMap(barcode="f", owning_branch="c", holding_branch="b",
+                       location="e", call_number="k", item_type="r",
+                       due_date="n", issue_count=None)
+
+
+@dataclass
+class Item:
+    barcode: str = ""
+    owning_branch: str = ""
+    holding_branch: str = ""
+    location: str = ""
+    call_number: str = ""
+    item_type: str = ""
+    due_date: str | None = None
+    issue_count: int | None = None
+
+    @property
+    def on_loan(self) -> bool:
+        """Availability is the presence of a due date, not a status flag."""
+        return self.due_date is not None
+
+
+@dataclass
 class FieldMap:
     """Tag and subfield assignments for one MARC flavour."""
 
@@ -54,6 +105,7 @@ class FieldMap:
     publisher_code: str
     date_code: str
     item: str
+    item_map: ItemMap
 
 
 # 245$h is the medium designator ("[electronic resource]") and carries
@@ -72,6 +124,7 @@ MARC21 = FieldMap(
     publisher_code="b",
     date_code="c",
     item="952",
+    item_map=MARC21_ITEM,
 )
 
 # In UNIMARC, 100 is general processing data and 700 is the main author
@@ -95,6 +148,7 @@ UNIMARC = FieldMap(
     publisher_code="c",
     date_code="d",
     item="995",
+    item_map=UNIMARC_ITEM,
 )
 
 FIELD_MAPS = {Flavour.MARC21: MARC21, Flavour.UNIMARC: UNIMARC}
@@ -116,7 +170,18 @@ class Work:
     publisher: str = ""
     publication_year: int | None = None
     item_count: int = 0
+    items: list["Item"] = dc_field(default_factory=list)
     deleted: bool = False
+    # MARC 005 changes only when the bibliographic record genuinely
+    # changes; the OAI datestamp also moves on circulation. Absent under
+    # UNIMARC, so content_hash is the flavour-neutral check.
+    marc_005: str | None = None
+    # Bibliography only, holdings excluded. Governs re-embedding.
+    content_hash: str | None = None
+    # Holdings only. Governs whether item rows need rewriting. Separate
+    # because the two change independently: a checkout moves the items
+    # and not the bibliography, and a catalogue correction the reverse.
+    items_hash: str | None = None
     # Which field each value came from. Kept because a wrong title is
     # far easier to diagnose when you can see it came from 200$a rather
     # than 245$a.
@@ -142,6 +207,51 @@ def _first_text(record: ET.Element, tag: str, codes: tuple[str, ...]) -> str:
         if values := [v for v in _subfields(field, codes) if v.strip()]:
             return strip_isbd(" ".join(values))
     return ""
+
+
+def _content_hash(marc_record: ET.Element, item_tag: str) -> str:
+    """Hash the record with its holdings excluded.
+
+    Circulation activity bumps a record's OAI datestamp without touching
+    its bibliographic content, so re-embedding on datestamp alone would
+    be enormously wasteful. Excluding the item field gives a check that
+    moves only when the bibliography does -- and unlike MARC 005, it
+    works under UNIMARC too.
+
+    The serialisation must be canonical. Koha emits attributes in
+    nondeterministic order: two consecutive GetRecord calls for the same
+    record returned identical byte counts but with tag/ind1/ind2 in
+    different sequence, which is Perl hash iteration order surfacing in
+    the output. ElementTree preserves that order faithfully, so a plain
+    tostring() hash changes on every harvest and every record looks
+    modified. ET.canonicalize (C14N) sorts attributes and normalises
+    namespaces, which is what makes the comparison meaningful.
+    """
+    clone = ET.Element(marc_record.tag, marc_record.attrib)
+    for child in marc_record:
+        if child.get("tag") != item_tag:
+            clone.append(child)
+    canonical = ET.canonicalize(
+        ET.tostring(clone, encoding="unicode"), strip_text=True
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _items_hash(marc_record: ET.Element, item_tag: str) -> str:
+    """Hash only the holdings fields.
+
+    Canonicalised for the same reason as the bibliographic hash: Koha
+    emits attributes in nondeterministic order, so an uncanonicalised
+    hash would report every item as changed on every harvest.
+    """
+    clone = ET.Element(marc_record.tag, marc_record.attrib)
+    for child in marc_record:
+        if child.get("tag") == item_tag:
+            clone.append(child)
+    canonical = ET.canonicalize(
+        ET.tostring(clone, encoding="unicode"), strip_text=True
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _extract_year(value: str) -> int | None:
@@ -206,8 +316,29 @@ def map_record(marc_record: ET.Element, flavour: Flavour,
         work.provenance["publication"] = tag
         break
 
-    work.item_count = len(_fields(marc_record, fm.item))
+    im = fm.item_map
+    for field in _fields(marc_record, fm.item):
+        codes = {sub.get("code"): (sub.text or "").strip()
+                 for sub in field.findall(f"{{{MARCXML_NS}}}subfield")}
+        issues = codes.get(im.issue_count) if im.issue_count else None
+        work.items.append(Item(
+            barcode=codes.get(im.barcode, ""),
+            owning_branch=codes.get(im.owning_branch, ""),
+            holding_branch=codes.get(im.holding_branch, ""),
+            location=codes.get(im.location, ""),
+            call_number=codes.get(im.call_number, "") if im.call_number else "",
+            item_type=codes.get(im.item_type, ""),
+            due_date=codes.get(im.due_date) or None,
+            issue_count=int(issues) if issues and issues.isdigit() else None,
+        ))
+    work.item_count = len(work.items)
     used.add(fm.item)
+
+    control_005 = marc_record.find(f"{{{MARCXML_NS}}}controlfield[@tag='005']")
+    if control_005 is not None and control_005.text:
+        work.marc_005 = control_005.text.strip()
+    work.content_hash = _content_hash(marc_record, fm.item)
+    work.items_hash = _items_hash(marc_record, fm.item)
 
     work.languages, source = detect_languages(marc_record, flavour)
     if source:

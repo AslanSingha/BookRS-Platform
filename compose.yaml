@@ -3,7 +3,28 @@
 # Only the ingestion service exists so far. bookrs-db, bookrs-api and
 # bookrs-widget are added as they are built.
 services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: bookrs
+      POSTGRES_USER: bookrs
+      # Development default only. A deployment supplies this via the
+      # environment; nothing here is a production credential.
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-bookrs_dev}"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # Applied automatically on first start of an empty volume.
+      - ./bookrs/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bookrs -d bookrs"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   ingestion:
+    depends_on:
+      db:
+        condition: service_healthy
     build:
       context: .
       dockerfile: docker/ingestion.Dockerfile
@@ -14,6 +35,7 @@ services:
     environment:
       # Operator-supplied. Never derived from the repository's own
       # advertised baseURL, which Koha reports incorrectly.
+      DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs"
       OAI_BASE_URL: "${OAI_BASE_URL:-http://host.docker.internal:8080/cgi-bin/koha/oai.pl}"
     volumes:
       # Bind-mounted during development so edits apply without rebuilding.
@@ -22,3 +44,6 @@ services:
       # Config lives at the image root; mount it so local edits apply
       # without a rebuild, same as the source trees above.
       - ./pytest.ini:/app/pytest.ini:ro
+
+volumes:
+  db-data:
