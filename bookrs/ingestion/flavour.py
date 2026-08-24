@@ -69,6 +69,45 @@ def _diagnose_non_xml(xml: bytes | str) -> str:
     return f"First bytes: {body[:120]!r}"
 
 
+def _diagnose_no_marc(root: ET.Element) -> str:
+    """Explain a response that parsed but held no MARCXML.
+
+    The likeliest cause is a repository serving a format this adapter
+    does not read. PMB, for instance, offers "UNIMARC PMB XML" and
+    Dublin Core rather than MARC21slim -- both valid OAI-PMH, neither
+    parseable here. Reporting "no MARCXML records" alone would send an
+    operator looking for a fault in their catalogue rather than telling
+    them the format is unsupported.
+    """
+    error = root.find(f"{{{OAI_NS}}}error")
+    if error is not None:
+        return (f"The repository returned an OAI-PMH error "
+                f"[{error.get('code', 'unknown')}]: {(error.text or '').strip()}")
+
+    # What namespaces did the metadata actually use?
+    namespaces = sorted({
+        el.tag.split("}")[0].lstrip("{")
+        for parent in root.iter(f"{{{OAI_NS}}}metadata")
+        for el in parent
+        if el.tag.startswith("{")
+    })
+    if not namespaces:
+        headers = root.findall(f".//{{{OAI_NS}}}header")
+        if headers and all(h.get("status") == "deleted" for h in headers):
+            return ("Every record in this response is a deleted-record "
+                    "header, which carries no metadata.")
+        return "No metadata elements were present in the response."
+
+    return (
+        f"The metadata is in {', '.join(namespaces)} rather than "
+        f"{MARCXML_NS}. This adapter reads MARC21slim only, which Koha "
+        f"serves under the marc21 and marcxml prefixes. Check "
+        f"ListMetadataFormats for a MARC option; a repository offering "
+        f"only Dublin Core or a vendor-specific schema is not yet "
+        f"supported."
+    )
+
+
 def _datafield_tags(marc_record: ET.Element) -> set[str]:
     return {
         tag
@@ -124,8 +163,8 @@ def detect_flavour_from_response(xml: bytes | str, sample_size: int = 5) -> Flav
     )
     if not marc_records:
         raise FlavourDetectionError(
-            "Response contains no MARCXML records. It may be an OAI error "
-            "response, a deleted-record header, or a non-MARC metadata format."
+            "Response contains no MARCXML records. "
+            + _diagnose_no_marc(root)
         )
 
     seen: dict[Flavour, int] = {}
