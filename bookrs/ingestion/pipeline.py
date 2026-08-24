@@ -21,6 +21,7 @@ from bookrs.ingestion.harvest import (
     HarvestStats,
     harvest_records,
 )
+from bookrs.ingestion.pmb import looks_like_pmb, translate_response
 from bookrs.ingestion.preflight import PreflightResult, preflight
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,12 @@ def ingest(cfg: HarvestConfig, *, expect_items: bool | None = None,
 
     def _stream() -> Iterator[Work]:
         for record in harvest_records(cfg, result.stats):
+            # PMB's metadata is translated per record rather than per
+            # page, because harvest_records streams records rather than
+            # yielding whole responses.
+            if looks_like_pmb(record):
+                translate_response(record)
+
             identifier_el = record.find(f".//{{{OAI_NS}}}identifier")
             identifier = (identifier_el.text or "") if identifier_el is not None else ""
 

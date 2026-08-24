@@ -27,6 +27,7 @@ from bookrs.ingestion.flavour import (
     FlavourDetectionError,
     detect_flavour_from_response,
 )
+from bookrs.ingestion.pmb import PMB_PREFIX, looks_like_pmb, translate_response
 from bookrs.ingestion.harvest import (
     MARCXML_NS,
     OAI_NS,
@@ -81,15 +82,27 @@ def preflight(cfg: HarvestConfig, expect_items: bool | None = None) -> Preflight
             root = _get(client, cfg.base_url,
                         {"verb": "ListMetadataFormats"}, cfg, stats)
             prefixes = [
-            (el.text or "").strip()
+                (el.text or "").strip()
                 for el in root.findall(f".//{{{OAI_NS}}}metadataPrefix")
             ]
+
+            # A repository offering only PMB's format is usable, but the
+            # operator has to be told which prefix to ask for: the
+            # default is Koha's, and PMB does not offer it.
+            if cfg.metadata_prefix not in prefixes and PMB_PREFIX in prefixes:
+                raise PreflightError(
+                    f"This repository does not offer "
+                    f"'{cfg.metadata_prefix}' but does offer "
+                    f"'{PMB_PREFIX}', which is PMB's UNIMARC format and is "
+                    f"supported. Re-run with --prefix {PMB_PREFIX}."
+                )
             if cfg.metadata_prefix not in prefixes:
                 raise PreflightError(
                     f"The endpoint does not offer metadataPrefix "
-                    f"'{cfg.metadata_prefix}'. Available: {prefixes or 'none'}. "
-                    f"Note that setting OAI-PMH:ConfFile restricts the offered "
-                    f"formats to those the file declares."
+                    f"'{cfg.metadata_prefix}'. Available: "
+                    f"{prefixes or 'none'}. Note that setting "
+                    f"OAI-PMH:ConfFile restricts the offered formats to "
+                    f"those the file declares."
                 )
 
             page = _get(
@@ -97,6 +110,7 @@ def preflight(cfg: HarvestConfig, expect_items: bool | None = None) -> Preflight
                 {"verb": "ListRecords", "metadataPrefix": cfg.metadata_prefix},
                 cfg, stats,
             )
+
     except PreflightError:
         raise
     except HarvestError as exc:
@@ -105,6 +119,12 @@ def preflight(cfg: HarvestConfig, expect_items: bool | None = None) -> Preflight
         # fit to harvest from" -- typically a configuration problem an
         # operator can fix -- from a failure partway through a harvest.
         raise PreflightError(f"Endpoint is not ready to harvest: {exc}") from exc
+
+    # PMB serves its own XML shape rather than MARC21slim. Translating
+    # here means flavour detection, the field map and everything after
+    # see the structure they expect.
+    if looks_like_pmb(page):
+        translate_response(page)
 
     try:
         flavour = detect_flavour_from_response(
