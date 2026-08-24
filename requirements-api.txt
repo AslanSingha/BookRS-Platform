@@ -1,0 +1,12 @@
+# API service. No PyTorch: query embedding is a separate concern from
+# batch encoding, and the search endpoints below read stored vectors
+# rather than generating them.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+psycopg[binary,pool]==3.2.3
+numpy==2.2.1
+
+# Test-only.
+pytest==8.3.3
+httpx==0.27.2
+pytest-httpx==0.30.0

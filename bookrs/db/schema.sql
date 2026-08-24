@@ -5,6 +5,26 @@
 -- docs/marc-field-analysis.md. Where a measured maximum exists it is
 -- noted, with headroom above it.
 
+-- Trigram matching for the exact/keyword endpoint, and accent-blind
+-- comparison. Both ship with the stock postgres image, so a library
+-- deploying this does not need a custom one.
+--
+-- unaccent matters more than it might appear: a patron searching
+-- "mythologie grecque" should find "La mythologie Grecque", and in a
+-- predominantly French catalogue accent-sensitive matching is the
+-- difference between finding a record and not.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS unaccent;
+
+-- unaccent() is STABLE, not IMMUTABLE, because its dictionary can be
+-- changed at runtime -- so it cannot be used in an index expression
+-- directly. This wrapper asserts immutability, which is true as long as
+-- the dictionary is left alone. Standard practice, but worth stating:
+-- changing the unaccent dictionary would silently corrupt the index.
+CREATE OR REPLACE FUNCTION public.immutable_unaccent(text)
+RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT AS
+$$ SELECT public.unaccent('public.unaccent', $1) $$;
+
 -- ---------------------------------------------------------------
 -- sources: one row per integrated library system.
 --
@@ -208,3 +228,36 @@ CREATE INDEX embeddings_staleness_idx
     ON embeddings (model, embedder_version, source_hash);
 CREATE INDEX embeddings_title_only_idx
     ON embeddings (is_title_only) WHERE is_title_only;
+
+-- ---------------------------------------------------------------
+-- Search indexes.
+--
+-- Trigram rather than full-text search: a catalogue holds many
+-- languages (the UNIMARC reference corpus is 87.6% French with English,
+-- Greek, Arabic and others alongside), and a tsvector needs a language
+-- configuration chosen per row. Trigrams are language-agnostic and also
+-- tolerate the typos that real catalogues contain -- one reference
+-- record reads "Le beau chardond'Ali Boron", missing a space.
+-- ---------------------------------------------------------------
+CREATE INDEX works_title_trgm_idx
+    ON works USING GIN (public.immutable_unaccent(lower(title)) gin_trgm_ops);
+
+-- Authors are an array; the index covers them joined, which is what a
+-- patron types -- they search for a name, not for one array element.
+--
+-- array_to_string is STABLE rather than IMMUTABLE, because converting a
+-- value to text can depend on session settings, so it cannot appear in
+-- an index expression. This wrapper does the join and the accent
+-- folding together and asserts immutability, which holds for text[].
+--
+-- References inside the body must be schema-qualified. PostgreSQL
+-- inlines an SQL function into the index expression, and resolves names
+-- during inlining against a restricted search_path -- so an unqualified
+-- call that works everywhere else fails at CREATE INDEX with
+-- "function does not exist", despite the function plainly existing.
+CREATE OR REPLACE FUNCTION public.searchable_authors(text[])
+RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT AS
+$$ SELECT public.immutable_unaccent(lower(array_to_string($1, ' '))) $$;
+
+CREATE INDEX works_authors_trgm_idx
+    ON works USING GIN (public.searchable_authors(authors) gin_trgm_ops);

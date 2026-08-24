@@ -72,6 +72,22 @@ services:
       - ./tests:/app/tests:ro
       - model-cache:/app/.cache/huggingface
 
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs"
+      TEST_DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs_test"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./bookrs:/app/bookrs:ro
+      - ./tests:/app/tests:ro
+
 volumes:
   db-data:
   model-cache:

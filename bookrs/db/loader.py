@@ -152,5 +152,10 @@ def load_works(conn: psycopg.Connection, source_id: int,
                 )
                 stats.items += 1
 
+    # Recorded so /health can report catalogue freshness. A library's
+    # monitoring needs to see a sync that has silently stopped running,
+    # which an "ok" status alone would not show.
+    conn.execute("UPDATE sources SET last_harvest = now() WHERE id = %s",
+                 (source_id,))
     conn.commit()
     return stats
