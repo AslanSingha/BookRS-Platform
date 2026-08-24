@@ -13,7 +13,8 @@ include the highest-severity issue in this document (§10.2).
 Section 11 covers patron ratings, which require a separate read
 channel from OAI-PMH. Section 12 records operational findings that arose
 from mistakes made while building against these instances — several of
-which produced plausible output rather than errors.
+which produced plausible output rather than errors. Section 13 covers
+embedding model selection, measured rather than assumed.
 
 ---
 
@@ -322,7 +323,7 @@ and it is **absent from 53 of 436 records**.
 | 264 | Publication (RDA) | 2.3% | 4 |
 | 880 | Alternate script | 0.2% | 1 |
 
-Full table available by re-running the profiling script (§14.2).
+Full table available by re-running the profiling script (§15.2).
 
 ### 5.2 Cataloguing-standard drift
 
@@ -599,7 +600,7 @@ A second instance was started with
 confirmed via `C4::Context->preference('marcflavour') == 'UNIMARC'`.
 Corpus: **4,849 records**, harvested in 97 pages.
 
-> The 100-page safety limit in the harvest script (§14.1) was nearly
+> The 100-page safety limit in the harvest script (§15.1) was nearly
 > reached by a *sample* corpus. A real library would blow straight
 > through it. The production adapter needs a generous bound or, better,
 > a time budget rather than a page count.
@@ -1026,7 +1027,7 @@ broken measurement.
 > **Adapter requirement.** All record content is read through an XML
 > parser. No regular expressions over MARC XML, including for quick
 > checks or diagnostics. The `<header>` count in the harvest script
-> (§14.1) is the sole exception: it counts a structural element in the
+> (§15.1) is the sole exception: it counts a structural element in the
 > OAI envelope for progress reporting only, never record content, and
 > is not used for any decision.
 
@@ -1121,9 +1122,181 @@ different variable rather than a different default. A test suite that
 can reach real data through an ambient environment variable is a hazard
 whether or not it currently does.
 
+### 12.7 An SQL function inlined into an index cannot resolve unqualified names
+
+Building the trigram indexes produced:
+
+```
+ERROR:  function immutable_unaccent(text) does not exist
+CONTEXT:  SQL function "searchable_authors" during inlining
+```
+
+while `\df` showed the function plainly present. The `CONTEXT` line is
+the only part that explains it: PostgreSQL inlines an SQL function into
+the index expression, and resolves names **during inlining against a
+restricted `search_path`**. An unqualified call that works in every
+other context fails here.
+
+The fix is to schema-qualify every reference inside a function body that
+will be used in an index expression — `public.immutable_unaccent(...)`,
+not `immutable_unaccent(...)`.
+
+Two related traps in the same area:
+
+- **`unaccent()` is `STABLE`, not `IMMUTABLE`**, because its dictionary
+  can be changed at runtime, so it cannot appear in an index expression.
+  Wrapping it in an `IMMUTABLE` function is the standard workaround, and
+  is correct only as long as the dictionary is left alone.
+- **`array_to_string()` is also `STABLE`**, so indexing a joined array
+  needs its own wrapper rather than composing built-ins.
+
+### 12.8 Trigram similarity penalises short queries against long fields
+
+Plain `similarity()` divides by the union of trigrams in both strings,
+so a short query scores low against a long field however exact the
+match:
+
+| | score |
+|---|---|
+| `similarity('kernighan, brian w. ritchie, dennis m.', 'kernighan')` | **0.294** |
+| `word_similarity('kernighan', 'kernighan, brian w. ritchie, dennis m.')` | **1.000** |
+
+0.294 is below pg_trgm's 0.3 default, so the record was not returned at
+all — and a third author would push it lower still. This is the normal
+case for library author search: patrons type a surname, and records hold
+`Surname, Forename Initial.` for every author.
+
+`word_similarity` measures the query against the best-matching *portion*
+of the target instead. Measured on the reference catalogue: an exact
+author or title match scores 1.000, a related title (`la mythologie
+celte` for `mythologie grecque`) 0.579, and an unrelated one 0.000.
+
+> **Two-stage query.** Scoring every row with `word_similarity` cannot
+> use the GIN index — measured at 82–110 ms over 5,285 works, which
+> would be seconds over 300,000. Using the `<%` operator to narrow
+> candidates via the index and then scoring explicitly costs 4–22 ms,
+> at the price of recall in the tail: `<%` applies its own stricter
+> threshold, so `mythologie grecque` returns three titles where
+> exhaustive scoring finds four. Top-ranked results are unaffected.
+
+### 12.9 Accent folding is not optional in a multilingual catalogue
+
+The UNIMARC reference corpus is 87.6% French. A patron typing
+`mythologie grecque` without accents must still find `La mythologie
+Grecque`, so `unaccent` is applied on both sides of every comparison and
+indexed accordingly.
+
+Trigram rather than full-text search, for the same reason: `tsvector`
+needs a language configuration chosen per row, the corpus spans French,
+English, Greek and Arabic, and 11% of records carry no language code at
+all. Trigrams are language-agnostic and additionally tolerate the typos
+real catalogues contain — one reference record reads `Le beau
+chardond'Ali Boron`, missing a space.
+
 ---
 
-## 13. Limitations of this analysis
+## 13. Embedding model selection
+
+### 13.1 Method
+
+Model quality was measured by whether **works sharing a subject heading
+embed closer together than unrelated works do**. Subject headings are a
+cataloguer's professional judgement about what a work is about, so two
+works sharing one are, by that judgement, related. The metric is the gap
+between the mean cosine similarity of same-subject pairs and the mean of
+all other pairs. A model encoding nothing useful gives a gap near zero.
+
+Sample: 400 works per flavour carrying at least one subject heading.
+
+### 13.2 Result
+
+| Model | MARC21 (English) | UNIMARC (French) |
+|---|---|---|
+| `all-MiniLM-L6-v2` | +0.597 | +0.169 |
+| `paraphrase-multilingual-MiniLM-L12-v2` | **+0.604** | **+0.301** |
+
+**The multilingual model is equivalent on English and 78% better on
+French.** There is no trade-off to weigh — only a larger download
+(471 MB against 91 MB) and roughly a third of the throughput. Both are
+384-dimensional, so the schema is indifferent to the choice.
+
+This answers the open question in the platform's Decision 4, which
+assumed a quality cost on English catalogues that does not appear.
+
+### 13.3 Retrieval, checked against real records
+
+Metrics can agree while the output is useless, so neighbours were read
+directly. Probing with *The Thirty Years War : Europe's tragedy*:
+
+```
+0.715  Encyclopédie de la Grande Guerre, 1914-1918
+0.663  A Paris sous l'occupation
+0.646  The age of revolution : Europe, 1789-1848
+0.630  La guerre de 39-45 vécue par un enfant
+```
+
+All European military history, three of four in French, **none sharing
+vocabulary with the query**. An English-only model cannot connect a
+17th-century English title to *La guerre de 39-45*.
+
+### 13.4 Tokenisation is a second, independent penalty
+
+French needs more tokens per character in an English-trained wordpiece
+vocabulary, because the subwords are not in it:
+
+| | chars per token |
+|---|---|
+| MARC21 (English) | 3.84 |
+| UNIMARC (French) | **2.90** |
+
+A 32% increase, and the fragments carry less meaning. Combined with the
+multilingual model's shorter input window (128 tokens against 256), this
+also determines how often text is truncated.
+
+### 13.5 Truncation is concentrated where it matters most
+
+Against the 128-token window:
+
+| | over the limit | of those with a description |
+|---|---|---|
+| MARC21 | 24 of 436 (5.5%) | **19 of 39 (49%)** |
+| UNIMARC | 13 of 4,849 (0.3%) | 12 of 783 (2%) |
+
+Overall truncation looks negligible. But **half the MARC21 works that
+have a description at all lose part of it** — the richest field
+available, clipped precisely when it is long enough to be worth having.
+
+> **Design consequence.** Core text (title and subject headings) and
+> description are encoded separately and their unit vectors averaged,
+> rather than concatenated. Nothing is discarded. The average of two
+> unit vectors must be renormalised, since averaging alone leaves the
+> unit sphere.
+
+### 13.6 Vector storage and query cost
+
+Vectors are stored as `REAL[]` rather than with pgvector, which is not
+in the stock postgres image. Measured:
+
+| | |
+|---|---|
+| Fetch 5,284 vectors from PostgreSQL | **432 ms** |
+| Convert to an ndarray | 46 ms |
+| Dot product against all of them | **1 ms** |
+
+The database round trip is 98% of a similarity request. Caching the
+matrix in the API process takes an end-to-end query from 545 ms to
+8–12 ms, and the cache is invalidated by a cheap probe — row count and
+latest `created_at` — rather than a signal from the embedding service,
+which runs in a different container and may not be running at all.
+
+A full all-pairs matrix over 5,284 works takes 145 ms, but that is not a
+query-time operation and does not scale: all pairs over 300,000 works
+would be 100 GB. A single query vector against 300,000 is roughly 30 ms,
+which is why pgvector is not yet needed.
+
+---
+
+## 14. Limitations of this analysis
 
 Stated plainly, because these bound what the findings support:
 
@@ -1159,16 +1332,27 @@ Stated plainly, because these bound what the findings support:
    observed once, on an instance designed to be ephemeral. Whether real
    Koha deployments lose OAI preferences on upgrade or restore is
    untested and should not be assumed from this.
-8. **Both corpora are Koha sample data.** The UNIMARC set is larger
+8. **The model comparison uses subject-heading agreement as a proxy for
+   quality.** Works sharing a cataloguer-assigned heading should embed
+   closer together, which is a reasonable signal but not the same as
+   measuring whether patrons find the recommendations useful. That needs
+   a deployed system and real patron behaviour; the thesis's Future Work
+   item on a user satisfaction study is the right instrument, and none
+   of the retrieval quality claimed here has been validated against
+   actual readers.
+9. **Retrieval was inspected on a handful of probes.** The neighbours in
+   §13.3 are convincing, but they are three queries chosen by someone
+   who wanted the model to work. No systematic evaluation was run.
+10. **Both corpora are Koha sample data.** The UNIMARC set is larger
    (4,849) and so carries less sampling error than the MARC21 set, but
    it is still synthetic and skewed — 94.6% French, 8.6% sound
    recordings.
 
 ---
 
-## 14. Appendix — scripts
+## 15. Appendix — scripts
 
-### 14.1 Harvest loop
+### 15.1 Harvest loop
 
 ```bash
 #!/bin/bash
@@ -1198,7 +1382,7 @@ Two production-relevant details: the token is URL-encoded because it
 contains slashes, and the safety stop prevents a malformed token from
 looping forever.
 
-### 14.2 Field profiling
+### 15.2 Field profiling
 
 The frequency table (§5.1) and coverage analysis (§6, §7) were produced
 by Python scripts using `xml.etree.ElementTree` against the harvested
