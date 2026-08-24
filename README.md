@@ -3,11 +3,12 @@
 > A recommendation service for libraries running open-source ILS
 > platforms — Koha, PMB, and other MARC / OAI-PMH-compliant systems.
 
-**Status: working, not yet piloted.** Catalogue ingestion, embedding and
-search run end to end against live Koha instances in both MARC flavours.
-No library has deployed it yet, so the collaborative-filtering half is
-still unbuilt — it needs circulation data that only a real deployment
-produces.
+**Status: working, not yet piloted.** Catalogue ingestion, embedding,
+search and the OPAC widget run end to end against live Koha instances in
+both MARC flavours — a patron viewing a record sees related books from
+the library's own holdings. No library has deployed it yet, so the
+collaborative-filtering half is still unbuilt: it needs circulation data
+that only a real deployment produces.
 
 ---
 
@@ -83,6 +84,8 @@ Four Docker services: `db`, `ingestion`, `embedding`, `api`.
 | `GET /works/{id}/similar` | recommendations for a given work |
 | `GET /search/exact` | ISBN, title or author lookup |
 | `GET /works/{id}` | a single record with availability |
+| `GET /works/by-record-id/{id}` | resolve a library's own biblionumber |
+| `GET /widget.js` | the OPAC widget |
 | `GET /health` | catalogue size, embedding coverage, sync freshness |
 
 **Measured against a 5,285-work catalogue** harvested from two live Koha
@@ -113,8 +116,9 @@ means loading the embedding model into the public-facing service. The
 stored-vector endpoints above need no model, so this is a deliberate
 separate decision rather than an oversight.
 
-**The OPAC widget**, and production hardening — auth, rate limiting,
-observability — which waits for a concrete pilot.
+**Production hardening** — authentication, rate limiting, observability
+— which waits for a concrete pilot rather than being built
+speculatively.
 
 ## Evidence base
 
@@ -169,6 +173,68 @@ off by default — and, for holdings, an `OAI-PMH:ConfFile` declaring
 `include_items: 1`. Note that declaring a conf file also restricts the
 formats the endpoint offers, which can remove `oai_dc` for other
 harvesters. See `docs/marc-field-analysis.md` §3.
+
+## Adding recommendations to the catalogue
+
+The widget renders a panel of related books on a record's detail page,
+with availability drawn from the library's own holdings.
+
+**1. Allow the OPAC's origin.** The widget runs on the catalogue, which
+is a different origin from this service, so the browser will not call it
+otherwise. The default is empty — an unconfigured deployment refuses
+cross-origin requests rather than allowing every site on the internet.
+
+```bash
+BOOKRS_ALLOWED_ORIGINS=https://catalogue.your-library.example \
+  docker compose up -d api
+```
+
+**2. Add the loader to Koha.** In the staff interface, under
+Administration → System preferences → **OPACUserJS**:
+
+```javascript
+(function () {
+  var s = document.createElement('script');
+  s.src = 'https://bookrs.your-library.example/widget.js';
+  s.setAttribute('data-api', 'https://bookrs.your-library.example');
+  s.setAttribute('data-source-id', '1');
+  s.setAttribute('data-limit', '6');
+  var c = document.currentScript;
+  if (c && c.nonce) { s.nonce = c.nonce; }
+  document.body.appendChild(s);
+})();
+```
+
+Two details in that snippet are not obvious and were found the hard way:
+
+- **`OPACUserJS` holds JavaScript, not HTML.** Koha wraps its contents
+  in `<script>` tags, so a `<script src="...">` placed there becomes
+  inert text inside a script block and never runs. Hence creating the
+  element in code.
+- **Koha serves a nonce-based Content-Security-Policy**, so the loader
+  copies the nonce from the block it runs in. Without it, an enforcing
+  policy drops the injected script with no visible error.
+
+**If your CSP is enforcing rather than report-only**, `script-src`
+must name this service's origin. Koha's default is `script-src 'self'`,
+which does not cover another host, and the widget will be blocked
+regardless of the nonce.
+
+**Options.** `data-source-id` is required when more than one library is
+configured, because record identifiers are unique within a source rather
+than across sources. `data-limit` sets how many suggestions to show
+(default 6), and `data-heading` changes the panel title (default
+"Readers also borrowed").
+
+**Placement.** The widget appends to the first of `#bookrs-recommendations`,
+the theme's main content container, or the page body. A library wanting
+control over where the panel appears can add an empty
+`<div id="bookrs-recommendations">` to their detail template.
+
+The widget fails silently. If the API is unreachable or the record is
+not in the catalogue yet, no panel appears and nothing is logged to the
+page — a missing panel is a disappointment, a JavaScript error on a
+library's catalogue is a support ticket.
 
 ## License
 
