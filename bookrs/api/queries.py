@@ -31,6 +31,11 @@ WORD_SIMILARITY_THRESHOLD = 0.45
 @dataclass
 class WorkSummary:
     id: int
+    # The library's own identifier for this record. Our id is
+    # meaningless to the OPAC, so every result carries the identifier
+    # the catalogue uses -- without it a widget cannot link back to the
+    # page a patron came from.
+    source_record_id: str
     title: str
     authors: list[str] = field(default_factory=list)
     publisher: str = ""
@@ -55,7 +60,8 @@ class WorkSummary:
 
 
 _SELECT = """
-    SELECT w.id, w.title, w.authors, w.publisher, w.publication_year,
+    SELECT w.id, w.source_record_id,
+           w.title, w.authors, w.publisher, w.publication_year,
            w.languages, w.subjects, w.isbns,
            count(i.id)                                        AS copies_total,
            count(i.id) FILTER (WHERE i.due_date IS NULL)       AS copies_available
@@ -68,10 +74,11 @@ _GROUP = " GROUP BY w.id "
 
 def _row_to_summary(row, score: float | None = None) -> WorkSummary:
     return WorkSummary(
-        id=row[0], title=row[1], authors=row[2] or [], publisher=row[3] or "",
-        publication_year=row[4], languages=[l.strip() for l in (row[5] or [])],
-        subjects=row[6] or [], isbns=row[7] or [],
-        copies_total=row[8], copies_available=row[9], score=score,
+        id=row[0], source_record_id=row[1], title=row[2],
+        authors=row[3] or [], publisher=row[4] or "",
+        publication_year=row[5], languages=[l.strip() for l in (row[6] or [])],
+        subjects=row[7] or [], isbns=row[8] or [],
+        copies_total=row[9], copies_available=row[10], score=score,
     )
 
 
@@ -81,6 +88,49 @@ def get_work(conn: psycopg.Connection, work_id: int) -> WorkSummary | None:
         (work_id,),
     ).fetchone()
     return _row_to_summary(row) if row else None
+
+
+def get_work_by_record_id(conn: psycopg.Connection, record_id: str,
+                          source_id: int | None = None) -> WorkSummary | None:
+    """Find a work by the library's own record identifier.
+
+    Accepts either the full OAI identifier ("KOHA-OAI-TEST:42") or the
+    bare biblionumber ("42"). The bare form is what an OPAC page has in
+    its URL, and the archive prefix is operator-configurable, so
+    requiring the full form would mean every widget had to know its
+    library's OAI-PMH:archiveID setting.
+
+    Matching a bare number against the identifier suffix is only
+    unambiguous within one source. With several configured, source_id
+    is required -- two Koha instances at their shipped defaults both
+    emit KOHA-OAI-TEST:1, for different books.
+    """
+    exact = conn.execute(
+        _SELECT + """
+        WHERE w.source_record_id = %(rid)s
+          AND w.deleted_at IS NULL
+          AND (%(sid)s::int IS NULL OR w.source_id = %(sid)s::int)
+        """ + _GROUP,
+        {"rid": record_id, "sid": source_id},
+    ).fetchone()
+    if exact:
+        return _row_to_summary(exact)
+
+    if not record_id.isdigit():
+        return None
+
+    rows = conn.execute(
+        _SELECT + """
+        WHERE w.source_record_id LIKE %(suffix)s
+          AND w.deleted_at IS NULL
+          AND (%(sid)s::int IS NULL OR w.source_id = %(sid)s::int)
+        """ + _GROUP + " LIMIT 2",
+        {"suffix": f"%:{record_id}", "sid": source_id},
+    ).fetchall()
+    # Ambiguous across sources: refuse rather than return an arbitrary
+    # one. Returning the wrong book here would be invisible -- the
+    # widget would show plausible recommendations for a different work.
+    return _row_to_summary(rows[0]) if len(rows) == 1 else None
 
 
 def search_exact(conn: psycopg.Connection, query: str, limit: int = 20,
