@@ -261,3 +261,45 @@ $$ SELECT public.immutable_unaccent(lower(array_to_string($1, ' '))) $$;
 
 CREATE INDEX works_authors_trgm_idx
     ON works USING GIN (public.searchable_authors(authors) gin_trgm_ops);
+
+-- ---------------------------------------------------------------
+-- loans: per-patron borrowing history.
+--
+-- The collaborative-filtering signal. Item-level checkout totals arrive
+-- through OAI-PMH (MARC 952$l) but are aggregate -- "borrowed 47 times"
+-- cannot be factorised -- so this comes from the ILS REST API instead.
+--
+-- patron_ref is an HMAC of the library's patron identifier, keyed on a
+-- per-deployment secret. The same patron always maps to the same
+-- reference, so the factorisation is unaffected, but this database
+-- holds nothing that identifies a person. It is pseudonymisation rather
+-- than anonymisation: anyone with both the secret and the library's own
+-- database could re-identify. A library still has to decide whether to
+-- hold borrowing history at all -- many deliberately purge it.
+-- ---------------------------------------------------------------
+CREATE TABLE loans (
+    id            BIGSERIAL PRIMARY KEY,
+    source_id     INTEGER     NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    work_id       BIGINT      NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+    patron_ref    VARCHAR(64) NOT NULL,   -- opaque; never a name or card number
+
+    -- The ILS's own checkout identifier, so a re-harvest updates rather
+    -- than duplicates. A loan is not unique on (patron, work): the same
+    -- patron borrowing the same book twice is two loans, and the repeat
+    -- is a stronger signal than either alone.
+    source_loan_id BIGINT     NOT NULL,
+
+    checked_out_at TIMESTAMPTZ,
+    checked_in_at  TIMESTAMPTZ,
+    renewals       SMALLINT   NOT NULL DEFAULT 0,
+
+    first_seen     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    UNIQUE (source_id, source_loan_id)
+);
+
+CREATE INDEX loans_work_idx   ON loans (work_id);
+CREATE INDEX loans_patron_idx ON loans (patron_ref);
+-- Building a user-item matrix reads every loan for a source at once.
+CREATE INDEX loans_matrix_idx ON loans (source_id, patron_ref, work_id);
