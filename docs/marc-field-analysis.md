@@ -323,7 +323,7 @@ and it is **absent from 53 of 436 records**.
 | 264 | Publication (RDA) | 2.3% | 4 |
 | 880 | Alternate script | 0.2% | 1 |
 
-Full table available by re-running the profiling script (§15.2).
+Full table available by re-running the profiling script (§16.2).
 
 ### 5.2 Cataloguing-standard drift
 
@@ -600,7 +600,7 @@ A second instance was started with
 confirmed via `C4::Context->preference('marcflavour') == 'UNIMARC'`.
 Corpus: **4,849 records**, harvested in 97 pages.
 
-> The 100-page safety limit in the harvest script (§15.1) was nearly
+> The 100-page safety limit in the harvest script (§16.1) was nearly
 > reached by a *sample* corpus. A real library would blow straight
 > through it. The production adapter needs a generous bound or, better,
 > a time budget rather than a page count.
@@ -945,10 +945,22 @@ behaviour of populated data.
 ### 11.3 Consequences
 
 **The integration is two channels, not one.** Ratings are not part of
-the MARC record and will never arrive via OAI-PMH. Reaching them
-requires Koha's REST API (`/api/v1/`) or another read path. This is the
-only finding in this document that *adds* scope rather than clarifying
-or constraining it.
+the MARC record and will never arrive via OAI-PMH. This is the only
+finding in this document that *adds* scope rather than clarifying or
+constraining it.
+
+> **Correction (2026-08-26).** This section previously said ratings are
+> "reachable over Koha's REST API." They are not. `api/v1/swagger/paths`
+> contains no rating or review route in Koha main; the claim was made
+> from the `ratings` table existing rather than from the API surface.
+> Reading them would require direct database access, which Decision 1
+> rules out, or a Koha plugin.
+>
+> **Circulation history is available**, and it is the better signal
+> anyway: `/api/v1/checkouts?checked_in=true` returns per-patron loans
+> with `patron_id`, `item_id` and — via the `item.biblio` embed —
+> `biblio_id`, along with checkout and checkin dates. That is a
+> user-item matrix, which `952$l`'s aggregate count is not. See §15.
 
 **The valence problem is per-deployment, not universal.** The working
 assumption had been that library data structurally lacks preference
@@ -977,6 +989,20 @@ mistakes made while doing so. Neither is a property of the OAI-PMH
 specification; both are properties of working with real deployments.
 
 ### 12.1 A restart can silently drop OAI configuration
+
+> **A worse variant, observed 2026-08-26.** The `OAI-PMH:ConfFile`
+> preference lives in the database; the file it names lives in the
+> container filesystem. They have different lifetimes, so recreating a
+> container leaves the preference pointing at a file that no longer
+> exists — and Koha then returns **HTTP 500 on every OAI request**
+> rather than falling back to bibliographic-only output.
+>
+> Louder than the silent case below, but harder to diagnose: the
+> adapter reports "Endpoint is not ready to harvest: HTTP 500" after
+> exhausting its retries, which is accurate and tells an operator
+> nothing about the cause. A 500 from a Koha OAI endpoint is worth
+> checking `OAI-PMH:ConfFile` against the filesystem before anything
+> else.
 
 The MARC21 instance was restarted mid-session. Afterwards:
 
@@ -1027,7 +1053,7 @@ broken measurement.
 > **Adapter requirement.** All record content is read through an XML
 > parser. No regular expressions over MARC XML, including for quick
 > checks or diagnostics. The `<header>` count in the harvest script
-> (§15.1) is the sole exception: it counts a structural element in the
+> (§16.1) is the sole exception: it counts a structural element in the
 > OAI envelope for progress reporting only, never record content, and
 > is not used for any decision.
 
@@ -1296,7 +1322,130 @@ which is why pgvector is not yet needed.
 
 ---
 
-## 14. Limitations of this analysis
+## 14. Circulation history — the collaborative signal
+
+### 14.1 Why OAI-PMH is not enough
+
+Collaborative filtering factorises a user–item matrix, which needs
+`(patron, work)` pairs. OAI-PMH carries none: patron data is the
+privacy-sensitive part of a library's records and the protocol
+deliberately does not expose it.
+
+Item-level checkout totals *do* arrive, as MARC `952$l` (§9.3). But they
+are aggregate — "this copy was borrowed 47 times" cannot be decomposed
+into who borrowed it — so they support a popularity ranking and nothing
+more.
+
+### 14.2 What Koha's REST API offers
+
+`api/v1/swagger/paths` in Koha main contains **no rating or review
+route**. The `ratings` table exists and `OpacStarRatings` defaults to
+enabled, but there is no supported way to read them over the API.
+
+`/api/v1/checkouts` is available and gives what is actually needed:
+
+| Field | Notes |
+|---|---|
+| `checkout_id` | the loan's own identifier |
+| `patron_id` | Koha's `borrowernumber` |
+| `item_id` | the physical copy |
+| `item.biblio.biblio_id` | via the `x-koha-embed: item.biblio` header |
+| `checkout_date`, `checkin_date` | loan duration is derivable |
+| `renewals_count` | a candidate confidence signal |
+
+Two mechanical details:
+
+- **`checked_in=true`** returns returned loans; the default returns only
+  current ones. Both are needed.
+- **Pagination uses `_page` and `_per_page`** — the underscore prefix is
+  required, and unprefixed names produce
+  `400 Malformed query string`. Koha sends RFC 5988 `Link` headers, so
+  `rel="next"` is the termination signal. Unlike OAI-PMH, an
+  `X-Base-Total-Count` header is also provided.
+
+Authentication is HTTP Basic when the `RESTBasicAuth` preference is
+enabled, which is considerably simpler than the OAuth2 client-credentials
+flow.
+
+### 14.3 Patron identifiers are not stored
+
+`patron_id` is Koha's `borrowernumber`. Storing it would link this
+database to named library members and their complete borrowing history —
+among the most sensitive data a library holds, and something many
+libraries deliberately purge.
+
+ALS needs identifiers that are **stable and distinct**. It does not need
+to know who they are. So each is replaced by
+
+```
+patron_ref = HMAC-SHA256(borrowernumber, deployment_secret)[:32]
+```
+
+- **HMAC rather than a plain hash**, because a bare SHA-256 over a few
+  hundred thousand integers is reversible by enumeration in seconds.
+- **The secret has no default and its absence is fatal.** A shared
+  default would make every deployment produce identical references,
+  which would let two libraries' data be correlated — exactly what this
+  is meant to prevent.
+
+> **This is pseudonymisation, not anonymisation.** Anyone holding both
+> the secret and the library's own database can re-identify. It bounds
+> the damage from a leak of this database alone. It does not make the
+> data non-personal, and a library's privacy policy still has to cover
+> holding borrowing history at all.
+
+### 14.4 Two identifier spaces, again
+
+The REST API identifies a record by **biblionumber** (`345`). The OAI
+harvest identifies the same record as **`KOHA-OAI-TEST:345`**, prefixed
+by the operator-configurable archiveID.
+
+This is the same shape as §4, and the same failure mode if joined
+carelessly: loans attached to the wrong works, producing recommendations
+that look plausible and are wrong. The mapping is therefore built
+explicitly, keyed on the identifier suffix, with duplicate suffixes
+counted rather than silently resolved to whichever row came first.
+
+### 14.5 A collision that would have erased most of the signal
+
+`source_loan_id` was initially populated from `item_id`. A copy is
+borrowed repeatedly over its life, so two patrons' separate loans of the
+same copy would have collided on the table's unique constraint and
+overwritten each other.
+
+The table would have filled. The row counts would have looked plausible.
+Every copy would have shown exactly one loan — by whoever borrowed it
+last — and most of the collaborative signal would have been silently
+erased. `checkout_id` is the loan's own identifier.
+
+### 14.6 What the test data does and does not show
+
+Verified against 120 generated loans: **120 harvested, 120 stored, zero
+unresolved**, 436 catalogue records mapped, every `patron_ref` exactly 32
+hex characters with no identifier leaked.
+
+That establishes the pipeline works. It establishes nothing about
+recommendation quality, and the reason is worth stating plainly:
+
+| | This data | Real circulation |
+|---|---|---|
+| Patrons | 12 | thousands |
+| Loans per patron | exactly 10, all identical | heavily skewed |
+| Matrix density | **17.9%** | nearer 0.01% |
+| Loan duration | ~0 seconds | days to weeks |
+
+The generator cycles patrons and items round-robin, so the distribution
+is perfectly uniform — no popular titles, no heavy borrowers, none of
+the skew that collaborative filtering actually exploits. 34 co-borrowed
+pairs exist, so there *is* structure to factorise, but ALS behaves very
+differently at realistic sparsity.
+
+Nothing here predicts how the recommender performs on a real catalogue.
+That needs a pilot library.
+
+---
+
+## 15. Limitations of this analysis
 
 Stated plainly, because these bound what the findings support:
 
@@ -1332,7 +1481,12 @@ Stated plainly, because these bound what the findings support:
    observed once, on an instance designed to be ephemeral. Whether real
    Koha deployments lose OAI preferences on upgrade or restore is
    untested and should not be assumed from this.
-8. **The model comparison uses subject-heading agreement as a proxy for
+8. **The circulation data is synthetic and unrealistic.** 12 patrons,
+   10 loans each, 17.9% matrix density where real circulation runs
+   nearer 0.01%, and every loan returned within the same second. It
+   demonstrates that harvesting and storage work; it supports no
+   claim about collaborative filtering quality.
+9. **The model comparison uses subject-heading agreement as a proxy for
    quality.** Works sharing a cataloguer-assigned heading should embed
    closer together, which is a reasonable signal but not the same as
    measuring whether patrons find the recommendations useful. That needs
@@ -1340,19 +1494,19 @@ Stated plainly, because these bound what the findings support:
    item on a user satisfaction study is the right instrument, and none
    of the retrieval quality claimed here has been validated against
    actual readers.
-9. **Retrieval was inspected on a handful of probes.** The neighbours in
+10. **Retrieval was inspected on a handful of probes.** The neighbours in
    §13.3 are convincing, but they are three queries chosen by someone
    who wanted the model to work. No systematic evaluation was run.
-10. **Both corpora are Koha sample data.** The UNIMARC set is larger
+11. **Both corpora are Koha sample data.** The UNIMARC set is larger
    (4,849) and so carries less sampling error than the MARC21 set, but
    it is still synthetic and skewed — 94.6% French, 8.6% sound
    recordings.
 
 ---
 
-## 15. Appendix — scripts
+## 16. Appendix — scripts
 
-### 15.1 Harvest loop
+### 16.1 Harvest loop
 
 ```bash
 #!/bin/bash
@@ -1382,7 +1536,7 @@ Two production-relevant details: the token is URL-encoded because it
 contains slashes, and the safety stop prevents a malformed token from
 looping forever.
 
-### 15.2 Field profiling
+### 16.2 Field profiling
 
 The frequency table (§5.1) and coverage analysis (§6, §7) were produced
 by Python scripts using `xml.etree.ElementTree` against the harvested
