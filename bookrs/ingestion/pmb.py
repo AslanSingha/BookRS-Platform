@@ -35,25 +35,25 @@ Four differences from MARCXML, each verified against PMB's own
 * **No XML namespace at all**, so there is nothing to map; the output is
   placed in the MARC21slim namespace the rest of the pipeline expects.
 
-.. warning::
+.. note::
 
-   **The format specification here comes from PMB 4.0.9 (2013).** It was
-   read from ``admin/convert/xml_unimarc.class.php`` in a GitHub mirror
-   whose last commit is 2013-09-25, and which uses PHP 5 idioms removed
-   in PHP 8. Current PMB is 8.x and explicitly targets PHP 8, so the
-   export code has certainly been touched since.
+   **Verified against current PMB.** The structure was first read from a
+   2013 mirror (PMB 4.0.9), which was a poor basis -- and was then
+   checked against the nightly build of 2026-08-25, whose
+   ``xml_unimarc.class.php`` carries a 2026-07-22 revision date. The
+   XML-writing logic is unchanged across those thirteen years: the same
+   ``<notice>`` / ``<f c=>`` / ``<s c=>`` elements, the same six named
+   leader elements with the same ``ord($v)==32 -> "*"`` substitution for
+   spaces, the same single ``ind`` attribute, and the same
+   ``count($sub_fields) == 1`` test distinguishing a control field. The
+   only differences are PHP modernisation -- brace style, ``require_once``
+   syntax -- and a switch from ``ENT_QUOTES`` to ``ENT_NOQUOTES``, which
+   changes whether apostrophes are entity-encoded and is immaterial to an
+   XML parser.
 
-   Whether this XML shape survived that rewrite is **unverified**. A
-   MARC serialisation is a stable thing and it may well be unchanged,
-   but nothing here establishes that. Before relying on this against a
-   real PMB deployment, either read
-   ``admin/convert/xml_unimarc.class.php`` in a current release from
-   forge.sigb.net, or harvest a live instance and compare.
+   Still unverified: no live PMB instance has been harvested. The format
+   is confirmed; the end-to-end path is not.
 
-   The lesson recorded rather than buried: reading the source that
-   writes a format is a good instinct, and it is worth nothing if the
-   source is a decade stale. Checking the version was one command and
-   was skipped.
 """
 
 from __future__ import annotations
