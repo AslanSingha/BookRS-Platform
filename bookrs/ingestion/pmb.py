@@ -34,6 +34,26 @@ Four differences from MARCXML, each verified against PMB's own
   keeps working.
 * **No XML namespace at all**, so there is nothing to map; the output is
   placed in the MARC21slim namespace the rest of the pipeline expects.
+
+.. warning::
+
+   **The format specification here comes from PMB 4.0.9 (2013).** It was
+   read from ``admin/convert/xml_unimarc.class.php`` in a GitHub mirror
+   whose last commit is 2013-09-25, and which uses PHP 5 idioms removed
+   in PHP 8. Current PMB is 8.x and explicitly targets PHP 8, so the
+   export code has certainly been touched since.
+
+   Whether this XML shape survived that rewrite is **unverified**. A
+   MARC serialisation is a stable thing and it may well be unchanged,
+   but nothing here establishes that. Before relying on this against a
+   real PMB deployment, either read
+   ``admin/convert/xml_unimarc.class.php`` in a current release from
+   forge.sigb.net, or harvest a live instance and compare.
+
+   The lesson recorded rather than buried: reading the source that
+   writes a format is a good instinct, and it is worth nothing if the
+   source is a decade stale. Checking the version was one command and
+   was skipped.
 """
 
 from __future__ import annotations

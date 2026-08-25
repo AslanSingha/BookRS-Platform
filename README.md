@@ -116,6 +116,13 @@ means loading the embedding model into the public-facing service. The
 stored-vector endpoints above need no model, so this is a deliberate
 separate decision rather than an oversight.
 
+**Verified PMB support.** The translation shim for PMB's
+`pmb_xml_unimarc` format is implemented and tested, but against the
+format as written by **PMB 4.0.9 (2013)** — the version available in a
+GitHub mirror. Current PMB is 8.x and targets PHP 8, so its export code
+has certainly changed; whether this XML shape survived is unverified. No
+live PMB instance has been harvested.
+
 **Production hardening** — authentication, rate limiting, observability
 — which waits for a concrete pilot rather than being built
 speculatively.
