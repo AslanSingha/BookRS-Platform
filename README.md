@@ -5,7 +5,7 @@
 
 **Status: working, not yet piloted.** Catalogue ingestion, embedding,
 search and the OPAC widget run end to end against live Koha instances in
-both MARC flavours — a patron viewing a record sees related books from
+both MARC flavours, and against a live PMB instance — a patron viewing a record sees related books from
 the library's own holdings. No library has deployed it yet, so the
 collaborative-filtering half is still unbuilt: it needs circulation data
 that only a real deployment produces.
@@ -45,7 +45,7 @@ integration layer and deployment model.
 | Data source | Static research dataset | Live ILS via OAI-PMH |
 | Schema | Books table | Bibliographic / item separation |
 | Signals | Explicit ratings | Circulation signals, then ratings |
-| Record format | Normalised CSV | MARC21 and UNIMARC |
+| Record format | Normalised CSV | MARC21, UNIMARC, PMB XML |
 | Embedding model | English-only | Multilingual |
 | Deployment | Local development | Docker Compose, self-hosted |
 
@@ -115,12 +115,6 @@ neither can be meaningfully tested without a library that has some.
 means loading the embedding model into the public-facing service. The
 stored-vector endpoints above need no model, so this is a deliberate
 separate decision rather than an oversight.
-
-**A live PMB harvest.** The translation shim for PMB's
-`pmb_xml_unimarc` format is implemented and tested, and the format has
-been verified against PMB's current nightly build — its XML output is
-unchanged since 2013. What has not happened is harvesting a running PMB
-instance end to end.
 
 **Production hardening** — authentication, rate limiting, observability
 — which waits for a concrete pilot rather than being built

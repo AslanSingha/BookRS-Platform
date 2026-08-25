@@ -37,22 +37,31 @@ Four differences from MARCXML, each verified against PMB's own
 
 .. note::
 
-   **Verified against current PMB.** The structure was first read from a
-   2013 mirror (PMB 4.0.9), which was a poor basis -- and was then
-   checked against the nightly build of 2026-08-25, whose
-   ``xml_unimarc.class.php`` carries a 2026-07-22 revision date. The
-   XML-writing logic is unchanged across those thirteen years: the same
-   ``<notice>`` / ``<f c=>`` / ``<s c=>`` elements, the same six named
-   leader elements with the same ``ord($v)==32 -> "*"`` substitution for
-   spaces, the same single ``ind`` attribute, and the same
-   ``count($sub_fields) == 1`` test distinguishing a control field. The
-   only differences are PHP modernisation -- brace style, ``require_once``
-   syntax -- and a switch from ``ENT_QUOTES`` to ``ENT_NOQUOTES``, which
-   changes whether apostrophes are entity-encoded and is immaterial to an
-   XML parser.
+   **Verified against a live PMB 8.1DEV instance**, harvested over
+   OAI-PMH on 2026-08-25. Every structural assumption above was
+   confirmed against real records: ``<notice>`` carrying all six leader
+   elements, ``<f c="001">1</f>`` as a control field with text and no
+   subfields, ``<f c="200" ind="1 ">`` with ``<s c="a">`` children, and
+   995 holdings. The ``<notice>`` element arrives inside the OAI
+   envelope's default namespace, which is why detection matches on local
+   element names.
 
-   Still unverified: no live PMB instance has been harvested. The format
-   is confirmed; the end-to-end path is not.
+   The format specification was first read from a 2013 mirror, then
+   re-checked against the nightly build of 2026-08-25 whose
+   ``xml_unimarc.class.php`` carries a 2026-07-22 revision. The
+   XML-writing logic is unchanged across thirteen years.
+
+   A full harvest produced 48 works and 32 item rows, with every field
+   resolving through the existing UNIMARC map: ``010$a`` for ISBN,
+   ``200$ae`` for title, ``700$ab`` for author, ``606`` for subjects,
+   ``210`` for publication and ``101$a`` for language. Nothing in the
+   downstream pipeline needed changing.
+
+   One difference from Koha worth knowing: **PMB exposes nothing until a
+   set is configured and attached to the source.** An unconfigured
+   repository returns ``noRecordsMatch`` rather than the whole
+   catalogue. Koha's ``ListSets`` returns ``noSetHierarchy`` and
+   harvests everything by default.
 
 """
 
