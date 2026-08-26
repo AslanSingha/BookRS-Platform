@@ -30,3 +30,6 @@ page_*.xml
 .idea/
 .vscode/
 .DS_Store
+
+# Windows alternate-data-stream markers, created on download
+*:Zone.Identifier

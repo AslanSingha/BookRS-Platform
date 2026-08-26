@@ -960,7 +960,7 @@ constraining it.
 > anyway: `/api/v1/checkouts?checked_in=true` returns per-patron loans
 > with `patron_id`, `item_id` and — via the `item.biblio` embed —
 > `biblio_id`, along with checkout and checkin dates. That is a
-> user-item matrix, which `952$l`'s aggregate count is not. See §15.
+> user-item matrix, which `952$l`'s aggregate count is not. See §14.
 
 **The valence problem is per-deployment, not universal.** The working
 assumption had been that library data structurally lacks preference
@@ -1420,28 +1420,60 @@ erased. `checkout_id` is the loan's own identifier.
 
 ### 14.6 What the test data does and does not show
 
-Verified against 120 generated loans: **120 harvested, 120 stored, zero
-unresolved**, 436 catalogue records mapped, every `patron_ref` exactly 32
-hex characters with no identifier leaked.
+Two generators were run against the MARC21 instance.
 
-That establishes the pipeline works. It establishes nothing about
-recommendation quality, and the reason is worth stating plainly:
+The **first cycled patrons and items round-robin**: 120 loans across 12
+patrons. It verified the harvest path — 120 harvested, 120 stored, zero
+unresolved, 436 catalogue records mapped, every `patron_ref` exactly 32
+hex characters with no identifier leaked — and nothing beyond it,
+because a perfectly uniform matrix has no popular titles, no heavy
+borrowers and no renewals, which is to say none of the structure
+collaborative filtering exploits.
 
-| | This data | Real circulation |
-|---|---|---|
-| Patrons | 12 | thousands |
-| Loans per patron | exactly 10, all identical | heavily skewed |
-| Matrix density | **17.9%** | nearer 0.01% |
-| Loan duration | ~0 seconds | days to weeks |
+The **second draws titles by Zipf rank across 50 patrons** and issues
+renewals and occasional repeat borrows, so every branch of the
+confidence formula has something to weigh:
 
-The generator cycles patrons and items round-robin, so the distribution
-is perfectly uniform — no popular titles, no heavy borrowers, none of
-the skew that collaborative filtering actually exploits. 34 co-borrowed
-pairs exist, so there *is* structure to factorise, but ALS behaves very
-differently at realistic sparsity.
+| | Round-robin | Zipf | Real circulation |
+|---|---|---|---|
+| Loans | 120 | 338 | millions |
+| Patrons | 12 | 50 | thousands |
+| Loans per patron | exactly 10 | 50 down to 1 | heavily skewed |
+| Matrix density | **17.9%** | **3.9%** | nearer 0.01% |
+| Renewals | 0 | 52 | routine |
+| Repeat pairs | 0 | 23 | common |
+| Co-borrowed pairs | 34 | 191 | — |
+| Loan duration | ~0 seconds | ~0 seconds | days to weeks |
 
-Nothing here predicts how the recommender performs on a real catalogue.
-That needs a pilot library.
+Both generators issue and return within the same run, so loan *duration*
+carries no signal in either and cannot be tested here at all.
+
+A clean rebuild on the Zipf data alone gives the funnel that matters:
+436 catalogue works, 218 loans, **87 interactions surviving filtering**,
+25 patrons and 30 works factorised — **6.9% collaborative coverage**.
+The other 93% has no collaborative signal and falls back to embeddings
+entirely. That is the cold-start split the thesis staged for, in real
+proportions.
+
+### 14.7 The metric is positive and the recommendations are meaningless
+
+Both at once, and the second is only visible by reading the output.
+
+Co-borrowed pairs embed at +0.145 against −0.076 for unrelated pairs —
+a **+0.221 gap**, so ALS learned real structure from 87 observations and
+the sign is right. But the nearest neighbours of a Springsteen biography
+are a special-education dissemination model and two C++ books. The
+generator picks titles by rank with no notion of subject, so "patrons
+who borrowed A also borrowed B" encodes random co-occurrence and nothing
+else.
+
+Had the gap been checked without reading the neighbours, this would have
+passed as working.
+
+The pipeline computes correctly. Output quality is a property of the
+borrowing behaviour behind it, and real patrons borrow along themes that
+no generator supplies. Nothing here predicts how the recommender
+performs on a real catalogue. That needs a pilot library.
 
 ---
 
@@ -1481,11 +1513,14 @@ Stated plainly, because these bound what the findings support:
    observed once, on an instance designed to be ephemeral. Whether real
    Koha deployments lose OAI preferences on upgrade or restore is
    untested and should not be assumed from this.
-8. **The circulation data is synthetic and unrealistic.** 12 patrons,
-   10 loans each, 17.9% matrix density where real circulation runs
-   nearer 0.01%, and every loan returned within the same second. It
-   demonstrates that harvesting and storage work; it supports no
-   claim about collaborative filtering quality.
+8. **The circulation data is synthetic, and the ALS output is
+   meaningless.** The better of two generators reaches 3.9% matrix
+   density against a real library's ~0.01%, returns every loan within
+   the same second, and picks titles by popularity rank with no notion
+   of subject. Factorisation over it produces a positive co-borrowing
+   gap (+0.221) and neighbours no reader would accept (§14.6). It
+   demonstrates that harvesting, storage and factorisation run; it
+   supports no claim whatever about recommendation quality.
 9. **The model comparison uses subject-heading agreement as a proxy for
    quality.** Works sharing a cataloguer-assigned heading should embed
    closer together, which is a reasonable signal but not the same as

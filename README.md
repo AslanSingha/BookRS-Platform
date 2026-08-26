@@ -44,7 +44,7 @@ integration layer and deployment model.
 |---|---|---|
 | Data source | Static research dataset | Live ILS via OAI-PMH |
 | Schema | Books table | Bibliographic / item separation |
-| Signals | Explicit ratings | Circulation signals, then ratings |
+| Signals | Explicit ratings | Implicit circulation intensity |
 | Record format | Normalised CSV | MARC21, UNIMARC, PMB XML |
 | Embedding model | English-only | Multilingual |
 | Deployment | Local development | Docker Compose, self-hosted |
@@ -55,12 +55,14 @@ headings, one embedding) and `items` records (physical copies — branch,
 call number, availability). Multiple copies of a book are real
 inventory, not duplicates to merge.
 
-**Two sources of preference signal.** Circulation records that a book
-was borrowed, not whether it was enjoyed, so implicit signals are
-weighted through an extended confidence formula. Koha additionally
-provides a native patron star rating feature, enabled by default. How
-much rating data exists varies by deployment and is measured at setup
-rather than assumed.
+**The preference signal is circulation, not ratings.** Circulation
+records that a book was borrowed, not whether it was enjoyed, so
+implicit signals are weighted through a confidence formula built from
+borrowing *intensity* — loans, renewals, repeat borrows — rather than
+direction. Its weights are deployment configuration, because the right
+values are an empirical question no synthetic data can answer. Koha does
+collect patron star ratings natively, but offers no way to read them
+(see "Not yet built"), so they remain schema-ready and unused.
 
 **Graceful degradation on sparse metadata.** Roughly a third of a real
 catalogue carries nothing beyond a title. The content-based layer is
@@ -69,13 +71,15 @@ designed around that constraint rather than assuming rich descriptions.
 ## What runs today
 
 ```
-bookrs/ingestion    OAI-PMH harvest → MARC21/UNIMARC → normalised works
-bookrs/db           works, items, embeddings, ratings + loader
+bookrs/ingestion    OAI-PMH harvest → MARC21/UNIMARC/PMB → normalised works
+                    circulation history → Koha REST API → pseudonymised loans
+bookrs/db           works, items, embeddings, ratings, loans, factors + loaders
 bookrs/embedding    multilingual encoding → 384-dimensional vectors
+bookrs/recommend    confidence weighting → ALS → per-work latent factors
 bookrs/api          search, similarity, availability, health
 ```
 
-Four Docker services: `db`, `ingestion`, `embedding`, `api`.
+Five Docker services: `db`, `ingestion`, `embedding`, `recommend`, `api`.
 
 **Endpoints**
 
@@ -104,12 +108,24 @@ whose bibliography actually changed.
 
 ## Not yet built
 
-**Collaborative filtering.** ALS needs `(patron, work, confidence)`
-triples. OAI-PMH carries no patron data by design, and item-level
-checkout totals are aggregate — "borrowed 47 times" cannot be
-factorised. Both patron ratings and circulation history exist in Koha
-and are reachable over its REST API; neither is harvested yet, and
-neither can be meaningfully tested without a library that has some.
+**Hybrid ranking.** All four layers run — catalogue, circulation,
+embeddings, factorisation — but `/works/{id}/similar` still answers from
+embeddings alone. The ALS factors are computed and stored and nothing
+reads them yet. Joining the two is the next piece of work, not a missing
+dependency.
+
+**Any evidence about recommendation quality.** Factorisation has only
+ever run on generated circulation. It produces a positive co-borrowing
+signal and neighbours no reader would accept, because the generator has
+no notion of subject — see `docs/marc-field-analysis.md` §14.6–14.7.
+That the pipeline computes correctly is established; that it recommends
+usefully is not, and cannot be until a library provides real borrowing
+history.
+
+**Patron ratings.** Koha collects them natively and enables them by
+default, but its REST API exposes no rating or review route. Reading
+them would require direct database access, which this design rules out,
+or a Koha plugin. The `ratings` table is present and unused.
 
 **Semantic search over free text.** Requires encoding the query, which
 means loading the embedding model into the public-facing service. The
