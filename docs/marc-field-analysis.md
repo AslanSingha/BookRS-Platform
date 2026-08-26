@@ -323,7 +323,7 @@ and it is **absent from 53 of 436 records**.
 | 264 | Publication (RDA) | 2.3% | 4 |
 | 880 | Alternate script | 0.2% | 1 |
 
-Full table available by re-running the profiling script (§16.2).
+Full table available by re-running the profiling script (§17.2).
 
 ### 5.2 Cataloguing-standard drift
 
@@ -600,7 +600,7 @@ A second instance was started with
 confirmed via `C4::Context->preference('marcflavour') == 'UNIMARC'`.
 Corpus: **4,849 records**, harvested in 97 pages.
 
-> The 100-page safety limit in the harvest script (§16.1) was nearly
+> The 100-page safety limit in the harvest script (§17.1) was nearly
 > reached by a *sample* corpus. A real library would blow straight
 > through it. The production adapter needs a generous bound or, better,
 > a time budget rather than a page count.
@@ -1053,7 +1053,7 @@ broken measurement.
 > **Adapter requirement.** All record content is read through an XML
 > parser. No regular expressions over MARC XML, including for quick
 > checks or diagnostics. The `<header>` count in the harvest script
-> (§16.1) is the sole exception: it counts a structural element in the
+> (§17.1) is the sole exception: it counts a structural element in the
 > OAI envelope for progress reporting only, never record content, and
 > is not used for any decision.
 
@@ -1477,7 +1477,156 @@ performs on a real catalogue. That needs a pilot library.
 
 ---
 
-## 15. Limitations of this analysis
+## 15. Ranking, and three things too thin to summarise
+
+### 15.1 Collaborative filtering re-ranks; it does not retrieve
+
+§14.7 recorded factors that carry a positive co-borrowing signal and
+neighbours no reader would accept. The mechanism deserves naming,
+because it determines where the collaborative layer can safely sit.
+
+Those neighbours were produced by querying the factor space directly.
+A work with no vocabulary in common with the query can rank first, if
+the same patrons happened to borrow both — which, under a generator
+that picks titles by popularity rank, is co-occurrence and nothing more.
+
+So the layer re-ranks a content-retrieved pool instead. It reorders
+candidates the embeddings already judged related; it cannot introduce
+one they did not. With a noisy signal that shuffles plausible results
+rather than surfacing implausible ones, and at zero coverage it reduces
+to the content-only behaviour through the same code path rather than a
+parallel one.
+
+The cost is real and worth stating. Collaborative retrieval's
+distinctive value is finding works that share readers but not
+vocabulary, and a re-ranker cannot reach those. The candidate pool is
+configuration so a deployment with real circulation can widen it, once
+there is evidence to justify doing so.
+
+### 15.2 Three floors, one reason
+
+Every parameter added to the ranking layer exists because a statistic
+computed over too little data is indistinguishable from one computed
+over enough.
+
+**`min_patrons`** — the only two collinear factor pairs in the corpus
+(cosine 1.0000 and 0.9995) are works sharing their sole two borrowers.
+ALS had no information to separate them, so it did not. Read as a
+similarity that is the strongest possible endorsement; it is the
+weakest possible vector.
+
+**`min_scored`** — an absent collaborative score is imputed with the
+median of the present ones, per query. Measured against the wired
+endpoint, the candidate pool around the highest-evidence query held
+**exactly one** work with usable factors. The median of one observation
+is that work's own score, inherited by every other candidate: a
+constant added to all six results, incapable of changing their order
+and capable of moving every score arbitrarily. Its −0.123 had shifted
+the entire response. Below the floor the layer abstains instead.
+
+**`pool`** — bounds how far down the content ranking the collaborative
+signal can reach, and so how close the layer sits to the retriever
+§15.1 rejects.
+
+None is tuned. `min_scored` was set to 3 on the reasoning that one or
+two observations are not a distribution, *before* measuring how many
+queries would clear it. That ordering matters: 4 of 11 eligible queries
+reach the blend at 3, and none would at 5. A reader could reasonably
+suspect the number was chosen to make the branch execute, and it was
+not.
+
+### 15.3 What the wired endpoint actually does
+
+Against the 436-work corpus, with defaults:
+
+| | |
+|---|---|
+| Works with factors | 30 (6.9%) |
+| Clearing `min_patrons` | 11 |
+| Scored candidates per pool | 0, 1, 2, 2, 2, 2, 2, 3, 3, 3, 4 |
+| Queries reaching the blend | 4 |
+| Largest sample any query gets | 4 observations |
+
+Seven of eleven eligible queries abstain. Where the blend does run, the
+median rests on three or four numbers. The visible ordering is content
+order almost throughout.
+
+The path executes end to end. Nothing here says it recommends well, and
+§14.7's argument applies unchanged.
+
+**Two questions, reported separately.** `hybrid_count` counts results
+carrying collaborative evidence of their own; `collaborative_applied`
+says whether the blend ran at all. They come apart: work 107 returns
+`hybrid_count: 0` with every score blended, because it cleared
+`min_scored` while none of its own top six carries factors. A single
+count would have told a library circulation had no effect on results it
+had moved.
+
+### 15.4 Duplicate records, and why nothing was done about them
+
+The nearest neighbour of a Springsteen biography is the same
+Springsteen biography under a different `work_id` — a distinct
+bibliographic record, so the query's own exclusion never sees it. On a
+patron-facing catalogue that is a visible embarrassment.
+
+Four instruments were tried against the 12 title-collision pairs in the
+corpus, and each fails on a case another handles:
+
+| Instrument | Fails on |
+|---|---|
+| Embedding cosine | Genuine duplicates where one record is title-only, which embed apart (0.862, 0.859). The metadata asymmetry that produces duplicate records is what makes their embeddings diverge. |
+| ISBN match | Two editions of one work carry different ISBNs — `9780670026623` and `9781780335797` for the same book. |
+| Title + author | Two volumes of *The art of computer programming* share both. Suppression would silently hide a distinct book. |
+| Publication year | 1997/2005 for the volumes, `None`/2012 for the editions. Separates neither. |
+
+What distinguishes them is **`245$n` and `$p`** — volume number and
+part name. `fieldmap.py` builds `title` from `245$a` and `$b` (UNIMARC
+`200$a`/`$e`), so the part designators never enter the schema, and raw
+MARC is not retained, so they cannot be backfilled without a
+re-harvest.
+
+No suppression rule was written. Every available heuristic produces
+either false positives on Knuth or false negatives on Springsteen, and
+a ranker quietly hiding real books is worse than one showing a
+duplicate. This is an ingestion-layer gap, and the frequency of
+multi-volume sets in a real catalogue remains unmeasured.
+
+There is a deeper point underneath. The Springsteen pair is not a
+duplicate record at all — it is one work with two manifestations,
+sitting in a table whose premise is that a row is the intellectual
+work. That is the work-clustering problem, and it is not solvable with
+a threshold.
+
+### 15.5 A normaliser that erased 3.9% of the catalogue
+
+While measuring the above, a title normaliser stripped everything
+outside `[a-z0-9 ]`. Seventeen records — in Russian, Chinese and Arabic
+— normalised to the empty string and collided with one another,
+reported as a 17-way duplicate group. **3.9% of this corpus**, declared
+identical on the basis of having no Latin characters.
+
+The measurement was wrong and the mechanism matters more than the
+correction. This system's stated purpose includes Cambodian libraries,
+where Khmer script is not an edge case, and §13 argues for multilingual
+embeddings on precisely those grounds. Had that normaliser reached
+ingestion or a deduplication pass, every Khmer-titled work would have
+been declared a duplicate of every other Khmer-titled work — silently,
+with plausible row counts.
+
+Normalisation must be script-agnostic (`str.isalnum()`, not an ASCII
+range), and any grouping key must refuse degenerate values rather than
+treat them as a match. The 3.9% figure is worth keeping as a rough
+estimate of what an ASCII assumption destroys in a collection of this
+kind.
+
+Note that even the corrected normaliser still collapses `C++` to `c`,
+because `+` is not alphanumeric. That pair was caught by a second
+check, not the normaliser — which is the argument for corroboration
+over a single instrument, in miniature.
+
+---
+
+## 16. Limitations of this analysis
 
 Stated plainly, because these bound what the findings support:
 
@@ -1532,16 +1681,27 @@ Stated plainly, because these bound what the findings support:
 10. **Retrieval was inspected on a handful of probes.** The neighbours in
    §13.3 are convincing, but they are three queries chosen by someone
    who wanted the model to work. No systematic evaluation was run.
-11. **Both corpora are Koha sample data.** The UNIMARC set is larger
+11. **Ranking parameters are unvalidated.** Three floors and a pool
+    size, all configuration, none tuned against data that could tune
+    them. The defaults are reasoning, not results (§15.2).
+12. **The hybrid path is barely exercised.** 4 queries of 436 works
+    reach the blend, over samples of 3 or 4 observations. That the
+    branch runs is established; its behaviour at realistic coverage is
+    not (§15.3).
+13. **Duplicate frequency is unmeasured.** 12 title collisions in 436
+    records, but the instrument that found them misses the case that
+    prompted the search, and `245$n`/`$p` is absent from the schema
+    entirely (§15.4).
+14. **Both corpora are Koha sample data.** The UNIMARC set is larger
    (4,849) and so carries less sampling error than the MARC21 set, but
    it is still synthetic and skewed — 94.6% French, 8.6% sound
    recordings.
 
 ---
 
-## 16. Appendix — scripts
+## 17. Appendix — scripts
 
-### 16.1 Harvest loop
+### 17.1 Harvest loop
 
 ```bash
 #!/bin/bash
@@ -1571,7 +1731,7 @@ Two production-relevant details: the token is URL-encoded because it
 contains slashes, and the safety stop prevents a malformed token from
 looping forever.
 
-### 16.2 Field profiling
+### 17.2 Field profiling
 
 The frequency table (§5.1) and coverage analysis (§6, §7) were produced
 by Python scripts using `xml.etree.ElementTree` against the harvested
