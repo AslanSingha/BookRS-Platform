@@ -68,6 +68,22 @@ collect patron star ratings natively, but offers no way to read them
 catalogue carries nothing beyond a title. The content-based layer is
 designed around that constraint rather than assuming rich descriptions.
 
+**Circulation re-ranks; it does not retrieve.** Recommendations are
+drawn from the semantic layer, and borrowing history reorders them. A
+work the embeddings did not consider related cannot be promoted into the
+results by co-borrowing alone — which is what put two C++ books beside a
+Springsteen biography when the factors were queried directly. The trade
+is deliberate and costly: works that share readers but not vocabulary
+are exactly what this cannot surface, and the candidate pool is
+configurable so a library with real circulation can widen it.
+
+The collaborative layer also declines to act on too little evidence.
+Factors resting on very few borrowers are excluded, and where too few
+candidates carry any, the layer abstains rather than imputing a value
+from one or two observations. A catalogue with no circulation gets the
+content-only behaviour through the same code path, not a separate one.
+See [`docs/marc-field-analysis.md`](docs/marc-field-analysis.md) §15.
+
 ## What runs today
 
 ```
@@ -76,6 +92,7 @@ bookrs/ingestion    OAI-PMH harvest → MARC21/UNIMARC/PMB → normalised works
 bookrs/db           works, items, embeddings, ratings, loans, factors + loaders
 bookrs/embedding    multilingual encoding → 384-dimensional vectors
 bookrs/recommend    confidence weighting → ALS → per-work latent factors
+                    hybrid ranking → content candidates, reordered
 bookrs/api          search, similarity, availability, health
 ```
 
@@ -85,7 +102,7 @@ Five Docker services: `db`, `ingestion`, `embedding`, `recommend`, `api`.
 
 | | |
 |---|---|
-| `GET /works/{id}/similar` | recommendations for a given work |
+| `GET /works/{id}/similar` | recommendations, with the signal behind each |
 | `GET /search/exact` | ISBN, title or author lookup |
 | `GET /works/{id}` | a single record with availability |
 | `GET /works/by-record-id/{id}` | resolve a library's own biblionumber |
@@ -108,19 +125,24 @@ whose bibliography actually changed.
 
 ## Not yet built
 
-**Hybrid ranking.** All four layers run — catalogue, circulation,
-embeddings, factorisation — but `/works/{id}/similar` still answers from
-embeddings alone. The ALS factors are computed and stored and nothing
-reads them yet. Joining the two is the next piece of work, not a missing
-dependency.
-
 **Any evidence about recommendation quality.** Factorisation has only
 ever run on generated circulation. It produces a positive co-borrowing
 signal and neighbours no reader would accept, because the generator has
-no notion of subject — see `docs/marc-field-analysis.md` §14.6–14.7.
-That the pipeline computes correctly is established; that it recommends
-usefully is not, and cannot be until a library provides real borrowing
-history.
+no notion of subject — see
+[`docs/marc-field-analysis.md`](docs/marc-field-analysis.md) §14.6–14.7.
+On that corpus 11 works of 436 carry enough evidence to rank, four
+queries reach the blend at all, and the largest sample any of them gets
+is four observations. The path runs end to end; that it recommends
+usefully is not established and cannot be until a library provides real
+borrowing history.
+
+**Duplicate record handling.** A catalogue's second copy of a work is
+often a second record, and the nearest neighbour of a book can be
+itself. No suppression rule is shipped: embeddings, ISBN, title-plus-
+author and publication year each fail on a case the others handle, and
+what separates a second *volume* from a second *edition* is `245$n`/`$p`,
+which ingestion does not yet extract. Hiding a real book is worse than
+showing a duplicate, so nothing is hidden. §15.4.
 
 **Patron ratings.** Koha collects them natively and enables them by
 default, but its REST API exposes no rating or review route. Reading
