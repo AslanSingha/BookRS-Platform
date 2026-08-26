@@ -153,8 +153,31 @@ def similar(
             raise HTTPException(status_code=404, detail="No such work")
         results = queries.similar_works(conn, work_id, limit=limit,
                                         exclude_title_only=exclude_title_only)
-    return {"work_id": work_id, "count": len(results),
-            "results": [_summary(w) for w in results]}
+    return {
+        "work_id": work_id,
+        "count": len(results),
+        # Two different questions, deliberately separate.
+        #
+        # hybrid_count is how many of these results have collaborative
+        # evidence of their own. collaborative_applied is whether the
+        # blend ran at all -- when it does, an imputed median shifts
+        # every score, including results that carry no evidence. A
+        # response can therefore show hybrid_count 0 with every score
+        # blended, and reporting only the count would tell a library
+        # circulation had no effect when it moved all six.
+        "hybrid_count": sum(1 for w in results if w.signal == "hybrid"),
+        "collaborative_applied": any(
+            w.score != w.content_score for w in results
+        ),
+        "results": [
+            _summary(w) | {
+                "signal": w.signal,
+                "content_score": w.content_score,
+                "collaborative_score": w.collaborative_score,
+            }
+            for w in results
+        ],
+    }
 
 
 @app.get("/works/by-record-id/{source_record_id:path}")

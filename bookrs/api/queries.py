@@ -7,6 +7,7 @@ handlers.
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass, field
 
@@ -25,7 +26,26 @@ import psycopg
 # of the target instead. Measured on the reference catalogue: an exact
 # author or title match scores 1.000, a related title ("la mythologie
 # celte" for "mythologie grecque") 0.579, and an unrelated one 0.000.
+from bookrs.recommend.rank import Candidate, RankWeights, rerank
+
 WORD_SIMILARITY_THRESHOLD = 0.45
+
+# Ranking weights are deployment configuration, not constants. The right
+# values depend on a library's circulation and cannot be established
+# from a catalogue that has none, so these defaults are a starting point
+# rather than a tuned result -- the same reasoning that keeps the
+# confidence weights configurable.
+#
+# The defaults are content-dominant deliberately. A deployment with
+# little circulation should behave like the content-only system until
+# its own data says otherwise.
+RANK_WEIGHTS = RankWeights(
+    content=float(os.environ.get("BOOKRS_WEIGHT_CONTENT", 0.7)),
+    collaborative=float(os.environ.get("BOOKRS_WEIGHT_COLLABORATIVE", 0.3)),
+    min_patrons=int(os.environ.get("BOOKRS_MIN_PATRONS", 3)),
+    pool=int(os.environ.get("BOOKRS_CANDIDATE_POOL", 50)),
+    min_scored=int(os.environ.get("BOOKRS_MIN_SCORED", 3)),
+)
 
 
 @dataclass
@@ -46,6 +66,14 @@ class WorkSummary:
     copies_total: int = 0
     copies_available: int = 0
     score: float | None = None
+
+    # Which signals produced this result. "these two works share
+    # readers" and "these two works are about the same thing" are
+    # different claims, and a library displaying one should be able to
+    # tell which it is making.
+    signal: str = "content"
+    content_score: float | None = None
+    collaborative_score: float | None = None
 
     @property
     def is_available(self) -> bool:
@@ -259,9 +287,53 @@ class _VectorCache:
 VECTORS = _VectorCache()
 
 
+class _FactorCache:
+    """Holds the ALS factors in process, on the vector cache's pattern.
+
+    Far smaller than the embedding matrix -- factors cover only the
+    works with enough co-borrowing to factorise, which was 6.9% of the
+    reference corpus -- but fetched on the same terms, because the
+    ranker needs both matrices for every request.
+
+    Probed on row count and the training timestamp. A refit rewrites
+    every row, and factors from two different runs are not comparable:
+    ALS is rotation-invariant, so a refit lands the same works in a new
+    space with no error to notice.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._probe: tuple | None = None
+        self._factors: dict[int, tuple[np.ndarray, int]] = {}
+
+    def get(self, conn: psycopg.Connection) -> dict[int, tuple[np.ndarray, int]]:
+        probe = conn.execute(
+            "SELECT count(*), max(trained_at) FROM work_factors"
+        ).fetchone()
+        with self._lock:
+            if probe != self._probe:
+                rows = conn.execute(
+                    """
+                    SELECT f.work_id, f.vector, f.n_patrons
+                    FROM work_factors f JOIN works w ON w.id = f.work_id
+                    WHERE w.deleted_at IS NULL
+                    """
+                ).fetchall()
+                self._factors = {
+                    r[0]: (np.asarray(r[1], dtype=np.float32), r[2])
+                    for r in rows
+                }
+                self._probe = probe
+            return self._factors
+
+
+FACTORS = _FactorCache()
+
+
 def similar_works(conn: psycopg.Connection, work_id: int, limit: int = 10,
-                  exclude_title_only: bool = False) -> list[WorkSummary]:
-    """Works whose embeddings are nearest to this one.
+                  exclude_title_only: bool = False,
+                  weights: RankWeights | None = None) -> list[WorkSummary]:
+    """Works related to this one, by content and where possible by circulation.
 
     Similarity is computed in the process rather than the database:
     vectors are stored as REAL[], and one query vector against the whole
@@ -270,7 +342,14 @@ def similar_works(conn: psycopg.Connection, work_id: int, limit: int = 10,
 
     Vectors are L2-normalised at generation, so the dot product is
     cosine similarity directly.
+
+    Where the work and its candidates carry ALS factors backed by enough
+    borrowers, those re-order the content ranking. Where they do not --
+    which is most of a catalogue, since factorisation reaches only the
+    works with enough co-borrowing -- the content order stands
+    unchanged, through this same path rather than a separate one.
     """
+    weights = weights or RANK_WEIGHTS
     probe = conn.execute(
         "SELECT vector FROM embeddings WHERE work_id = %s", (work_id,)
     ).fetchone()
@@ -296,14 +375,47 @@ def similar_works(conn: psycopg.Connection, work_id: int, limit: int = 10,
     kept_ids = [wid for wid, k in zip(ids, keep) if k]
     kept_scores = scores[keep]
 
-    n = min(limit, len(kept_scores))
-    top = np.argpartition(-kept_scores, n - 1)[:n]
+    # Retrieve a pool by content, then let circulation re-order it.
+    # Collaborative filtering never retrieves here: a work the
+    # embeddings did not surface cannot be promoted into the results by
+    # co-borrowing alone. That is not a preference -- using the factors
+    # as a candidate source is what put two C++ books next to a
+    # Springsteen biography on generated circulation.
+    pool_size = min(max(weights.pool, limit), len(kept_scores))
+    top = np.argpartition(-kept_scores, pool_size - 1)[:pool_size]
     top = top[np.argsort(-kept_scores[top])]
-    chosen = {kept_ids[i]: float(kept_scores[i]) for i in top}
+
+    factors = FACTORS.get(conn)
+    candidates = [
+        Candidate(
+            work_id=kept_ids[i],
+            content_score=float(kept_scores[i]),
+            factors=factors.get(kept_ids[i], (None, 0))[0],
+            n_patrons=factors.get(kept_ids[i], (None, 0))[1],
+        )
+        for i in top
+    ]
+    query_factors, query_n_patrons = factors.get(work_id, (None, 0))
+    ranked = rerank(candidates, query_factors, query_n_patrons,
+                    weights, limit)
+    chosen = {r.work_id: r for r in ranked}
 
     detail = conn.execute(
         _SELECT + " WHERE w.id = ANY(%s)" + _GROUP, (list(chosen),)
     ).fetchall()
-    results = [_row_to_summary(r, score=chosen[r[0]]) for r in detail]
-    results.sort(key=lambda w: w.score, reverse=True)
+    results = []
+    for row in detail:
+        r = chosen[row[0]]
+        summary = _row_to_summary(row, score=r.score)
+        summary.signal = r.signal
+        summary.content_score = r.content_score
+        summary.collaborative_score = r.collaborative_score
+        results.append(summary)
+
+    # Re-sorted on the ranker's order rather than the score alone: the
+    # ranker breaks ties on work_id, and sorting again on score would
+    # discard that and reintroduce the non-determinism it exists to
+    # prevent.
+    order = {r.work_id: i for i, r in enumerate(ranked)}
+    results.sort(key=lambda w: order[w.id])
     return results

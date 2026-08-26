@@ -82,6 +82,11 @@ class RankWeights:
     #: which a ranker would read as a perfect match.
     min_patrons: int = 3
 
+    #: Minimum scored candidates before the collaborative term is used
+    #: at all. Fewer than this and the per-query median is not a
+    #: summary of anything.
+    min_scored: int = 3
+
     #: Content candidates considered before re-ranking. Wider means the
     #: collaborative signal can reach further down the semantic ranking;
     #: narrower keeps it closer to pure content-based behaviour.
@@ -96,6 +101,8 @@ class RankWeights:
             raise ValueError("min_patrons must be at least 1")
         if self.pool < 1:
             raise ValueError("pool must be at least 1")
+        if self.min_scored < 1:
+            raise ValueError("min_scored must be at least 1")
 
 
 @dataclass(frozen=True)
@@ -170,6 +177,20 @@ def rerank(
         query_factors is not None and query_n_patrons >= weights.min_patrons
     )
     scored = [c for c in ordered if _usable(c, weights)] if query_usable else []
+
+    # A median needs enough observations to be one. With a single
+    # scored candidate the "median" is that work's own score, which
+    # every unscored candidate then inherits -- a constant added to
+    # every result, incapable of changing the order and capable of
+    # moving every score by an arbitrary amount. Measured on the
+    # reference corpus: a pool of 50 around the highest-evidence query
+    # contained exactly one eligible work, and its -0.123 was applied
+    # to all six results.
+    #
+    # Below the floor the collaborative layer abstains rather than
+    # contributing an offset it cannot justify.
+    if len(scored) < weights.min_scored:
+        scored = []
 
     if not scored:
         return [

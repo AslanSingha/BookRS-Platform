@@ -84,7 +84,7 @@ class TestContentOnlyPath:
 
     def test_query_below_evidence_floor_is_content_only(self):
         candidates = [_c(1, 0.5, _v(0, 1), 10), _c(2, 0.9, _v(1, 0), 10)]
-        ranked = rerank(candidates, QUERY, 2, RankWeights(min_patrons=3),
+        ranked = rerank(candidates, QUERY, 2, RankWeights(min_patrons=3, min_scored=1),
                         limit=2)
         assert [r.work_id for r in ranked] == [2, 1]
         assert {r.signal for r in ranked} == {"content"}
@@ -97,21 +97,25 @@ class TestEvidenceFloor:
     match; in fact the weakest possible vectors."""
 
     def test_thin_candidate_factors_do_not_rank(self):
-        candidates = [_c(1, 0.5, _v(1, 0), 2), _c(2, 0.6, _v(0, 1), 2)]
-        ranked = rerank(candidates, QUERY, 10, RankWeights(min_patrons=3),
-                        limit=2)
-        assert [r.work_id for r in ranked] == [2, 1]
+        """Three candidates, not two: with fewer than min_scored the
+        abstention floor would reject them anyway, and the test would
+        pass without min_patrons doing anything."""
+        candidates = [_c(1, 0.5, _f(1.0), 2), _c(2, 0.6, _f(0.5), 2),
+                      _c(3, 0.4, _f(0.0), 2)]
+        ranked = rerank(candidates, QUERY, 10,
+                        RankWeights(min_patrons=3, min_scored=1), limit=3)
+        assert [r.work_id for r in ranked] == [2, 1, 3]
         assert {r.signal for r in ranked} == {"content"}
 
     def test_floor_is_inclusive(self):
         candidates = [_c(1, 0.1, _v(1, 0), 3)]
-        ranked = rerank(candidates, QUERY, 3, RankWeights(min_patrons=3),
+        ranked = rerank(candidates, QUERY, 3, RankWeights(min_patrons=3, min_scored=1),
                         limit=1)
         assert ranked[0].signal == "hybrid"
 
     def test_lowering_the_floor_admits_thin_factors(self):
         candidates = [_c(1, 0.1, _v(1, 0), 2)]
-        ranked = rerank(candidates, QUERY, 2, RankWeights(min_patrons=2),
+        ranked = rerank(candidates, QUERY, 2, RankWeights(min_patrons=2, min_scored=1),
                         limit=1)
         assert ranked[0].signal == "hybrid"
 
@@ -122,18 +126,18 @@ class TestReranking:
         outranks a stronger one without."""
         candidates = [_c(1, 0.90, _v(0, 1), 10), _c(2, 0.60, _v(1, 0), 10)]
         ranked = rerank(candidates, QUERY, 10,
-                        RankWeights(content=0.3, collaborative=0.7), limit=2)
+                        RankWeights(content=0.3, collaborative=0.7, min_scored=1), limit=2)
         assert [r.work_id for r in ranked] == [2, 1]
 
     def test_content_dominant_weights_keep_content_order(self):
         candidates = [_c(1, 0.90, _v(0, 1), 10), _c(2, 0.60, _v(1, 0), 10)]
         ranked = rerank(candidates, QUERY, 10,
-                        RankWeights(content=0.99, collaborative=0.01), limit=2)
+                        RankWeights(content=0.99, collaborative=0.01, min_scored=1), limit=2)
         assert [r.work_id for r in ranked] == [1, 2]
 
     def test_both_scores_are_reported(self):
         ranked = rerank([_c(1, 0.5, _v(1, 0), 10)], QUERY, 10,
-                        RankWeights(), limit=1)
+                        RankWeights(min_scored=1), limit=1)
         assert ranked[0].content_score == pytest.approx(0.5)
         assert ranked[0].collaborative_score == pytest.approx(1.0)
         assert ranked[0].signal == "hybrid"
@@ -143,9 +147,9 @@ class TestReranking:
         to different totals."""
         candidates = [_c(1, 0.5, _v(1, 0), 10)]
         a = rerank(candidates, QUERY, 10,
-                   RankWeights(content=1, collaborative=1), limit=1)
+                   RankWeights(content=1, collaborative=1, min_scored=1), limit=1)
         b = rerank(candidates, QUERY, 10,
-                   RankWeights(content=10, collaborative=10), limit=1)
+                   RankWeights(content=10, collaborative=10, min_scored=1), limit=1)
         assert a[0].score == pytest.approx(b[0].score)
 
 
@@ -213,7 +217,8 @@ class TestImputation:
         """It was placed by an imputation, not by evidence, and a
         library displaying it should not be told otherwise."""
         candidates = [_c(1, 0.5, _v(1, 0), 9), _c(2, 0.5)]
-        ranked = rerank(candidates, QUERY, 9, RankWeights(), limit=2)
+        ranked = rerank(candidates, QUERY, 9, RankWeights(min_scored=1),
+                        limit=2)
         by_id = {r.work_id: r for r in ranked}
         assert by_id[2].signal == "content"
         assert by_id[2].collaborative_score is None
@@ -248,3 +253,49 @@ class TestFactorMap:
 
     def test_empty_input(self):
         assert factor_map([]) == {}
+
+
+class TestAbstention:
+    """The collaborative term is skipped when too few candidates carry
+    evidence. A per-query median over one observation is that work's own
+    score, inherited by every other candidate -- a uniform offset that
+    cannot reorder anything and can move every score arbitrarily.
+
+    Measured on the reference corpus: a pool of 50 around the
+    highest-evidence query held exactly one eligible work, whose -0.123
+    was applied to all six results.
+    """
+
+    def _one_scored(self, min_scored):
+        candidates = [_c(1, 0.9, _f(-0.9), 9), _c(2, 0.8), _c(3, 0.7)]
+        return rerank(candidates, QUERY, 9,
+                      RankWeights(min_scored=min_scored), limit=3)
+
+    def test_single_observation_does_not_impute(self):
+        ranked = self._one_scored(min_scored=3)
+        assert {r.signal for r in ranked} == {"content"}
+        assert [r.score for r in ranked] == [0.9, 0.8, 0.7]
+
+    def test_lowering_the_floor_admits_it(self):
+        ranked = self._one_scored(min_scored=1)
+        assert any(r.signal == "hybrid" for r in ranked)
+
+    def test_two_observations_still_abstain(self):
+        """The floor is a minimum, not a threshold to be approached.
+        Two scored candidates is still not a distribution."""
+        candidates = [_c(1, 0.9, _f(-0.9), 9), _c(2, 0.8, _f(0.9), 9),
+                      _c(3, 0.7)]
+        ranked = rerank(candidates, QUERY, 9, RankWeights(min_scored=3),
+                        limit=3)
+        assert {r.signal for r in ranked} == {"content"}
+
+    def test_enough_observations_still_rank(self):
+        candidates = [_c(i, 0.5, _f(d), 9)
+                      for i, d in enumerate((0.9, 0.5, 0.1), start=1)]
+        ranked = rerank(candidates, QUERY, 9, RankWeights(min_scored=3),
+                        limit=3)
+        assert [r.work_id for r in ranked] == [1, 2, 3]
+
+    def test_floor_below_one_rejected(self):
+        with pytest.raises(ValueError):
+            RankWeights(min_scored=0)
