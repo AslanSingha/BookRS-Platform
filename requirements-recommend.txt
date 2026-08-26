@@ -1,0 +1,13 @@
+# Matrix factorisation only. Deliberately separate from the embedding
+# service: implicit publishes no Linux wheels and must be compiled, so
+# its image needs a C toolchain that has no business sitting alongside
+# PyTorch.
+implicit==0.7.2
+scipy==1.14.1
+numpy==2.1.3
+psycopg[binary]==3.2.3
+
+# Test-only.
+pytest==8.3.3
+httpx==0.27.2
+pytest-httpx==0.30.0

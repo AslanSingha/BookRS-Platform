@@ -303,3 +303,38 @@ CREATE INDEX loans_work_idx   ON loans (work_id);
 CREATE INDEX loans_patron_idx ON loans (patron_ref);
 -- Building a user-item matrix reads every loan for a source at once.
 CREATE INDEX loans_matrix_idx ON loans (source_id, patron_ref, work_id);
+
+-- ---------------------------------------------------------------
+-- work_factors: latent factors from circulation.
+--
+-- Item factors only. User factors would enable personalised
+-- recommendations, which need to know which patron is asking -- and
+-- this service is anonymous by design, so storing a behavioural profile
+-- per patron would mean holding sensitive data for a feature that does
+-- not exist.
+--
+-- Coverage is partial by nature. A work needs at least two borrowers
+-- before it carries any co-occurrence signal, and a library's long tail
+-- never reaches that. Works without a row here fall back to the
+-- embedding layer, which is what the hybrid staging is for.
+-- ---------------------------------------------------------------
+CREATE TABLE work_factors (
+    work_id            BIGINT      PRIMARY KEY REFERENCES works(id) ON DELETE CASCADE,
+    vector             REAL[]      NOT NULL,
+    dimensions         SMALLINT    NOT NULL,
+
+    -- Factors from different runs are not comparable: a change of
+    -- dimensionality, confidence formula or algorithm puts them in a
+    -- different space. Mixing two spaces produces plausible nonsense
+    -- rather than an error, so the run is recorded and a change forces
+    -- a refit.
+    factoriser_version SMALLINT    NOT NULL,
+    trained_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- How much evidence backs this work's factors. A work with two
+    -- borrowers and one with two hundred both get a vector; the ranking
+    -- layer should weigh them differently.
+    n_patrons          INTEGER     NOT NULL DEFAULT 0
+);
+
+CREATE INDEX work_factors_version_idx ON work_factors (factoriser_version);

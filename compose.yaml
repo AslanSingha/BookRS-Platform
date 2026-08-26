@@ -91,6 +91,20 @@ services:
       - ./bookrs:/app/bookrs:ro
       - ./tests:/app/tests:ro
 
+  recommend:
+    build:
+      context: .
+      dockerfile: docker/recommend.Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs"
+      TEST_DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs_test"
+    volumes:
+      - ./bookrs:/app/bookrs:ro
+      - ./tests:/app/tests:ro
+
 volumes:
   db-data:
   model-cache:

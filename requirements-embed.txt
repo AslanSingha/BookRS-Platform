@@ -5,6 +5,7 @@
 sentence-transformers==3.3.1
 psycopg[binary]==3.2.3
 
+
 # Test-only. Present so the whole suite runs in either container --
 # a suite that needs two commands is a suite someone forgets to run
 # half of.
