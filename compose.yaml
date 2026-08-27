@@ -105,6 +105,29 @@ services:
       - ./bookrs:/app/bookrs:ro
       - ./tests:/app/tests:ro
 
+  # Test environment, not a service. Carries node for the widget
+  # harness, which the service images deliberately do not — see
+  # docker/test.Dockerfile.
+  #
+  #   docker compose run --rm test python -m pytest
+  test:
+    build:
+      context: .
+      dockerfile: docker/test.Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs"
+      TEST_DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs_test"
+    volumes:
+      - ./bookrs:/app/bookrs:ro
+      - ./tests:/app/tests:ro
+      # The Dockerfiles are themselves under test — see
+      # tests/test_dockerfiles.py. Without this the guards have nothing
+      # to read.
+      - ./docker:/app/docker:ro
+
 volumes:
   db-data:
   model-cache:

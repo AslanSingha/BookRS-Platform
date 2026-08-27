@@ -283,6 +283,21 @@ not in the catalogue yet, no panel appears and nothing is logged to the
 page — a missing panel is a disappointment, a JavaScript error on a
 library's catalogue is a support ticket.
 
+## Running the tests
+
+```bash
+docker compose run --rm test python -m pytest
+```
+
+The `test` service exists because the suite needs something the services
+do not. The OPAC widget is JavaScript, and its tests drive it through a
+stub DOM to check what a patron actually sees — which needs a JavaScript
+runtime that a Python service has no business shipping. Rather than add
+one to a production image, the test environment is its own image.
+
+Running the suite in a service image instead is not an error, but the
+widget tests will skip there, and a skipped test is not a passing one.
+
 ## License
 
 GNU General Public License v3.0 — matching Koha and the wider
