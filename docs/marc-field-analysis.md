@@ -1585,6 +1585,22 @@ part name. `fieldmap.py` builds `title` from `245$a` and `$b` (UNIMARC
 MARC is not retained, so they cannot be backfilled without a
 re-harvest.
 
+**Measured on the MARC21 corpus:** 6 of 436 records carry `245$n` or
+`$p` — **1.4%**. Rare, but not hypothetical, and the sample includes
+`TCP/IP illustrated. Vol. 2, The implementation` and `UNIX network
+programming. Vol. 2` — both members of title-collision pairs above,
+whose volume designators were present in the MARC record all along and
+discarded at field mapping.
+
+Two neighbouring findings from the same profile. `245$h`, the general
+material designation, appears on **10.1%** of records and is also
+dropped; it is what makes an electronic edition indistinguishable from
+its print counterpart, and it is seven times more common than part
+designators. And one record carries `245$6`, the linkage to an `880`
+alternate-graphic-representation field — MARC21's mechanism for
+non-Latin scripts. One record here; routine in a catalogue with Khmer
+titles, and unhandled.
+
 No suppression rule was written. Every available heuristic produces
 either false positives on Knuth or false negatives on Springsteen, and
 a ranker quietly hiding real books is worse than one showing a
@@ -1688,10 +1704,13 @@ Stated plainly, because these bound what the findings support:
     reach the blend, over samples of 3 or 4 observations. That the
     branch runs is established; its behaviour at realistic coverage is
     not (§15.3).
-13. **Duplicate frequency is unmeasured.** 12 title collisions in 436
-    records, but the instrument that found them misses the case that
-    prompted the search, and `245$n`/`$p` is absent from the schema
-    entirely (§15.4).
+13. **Duplicate frequency in a real catalogue is unknown.** 12 title
+    collisions in 436 records, and the instrument that found them misses
+    the case that prompted the search. Part designators are now measured
+    at 1.4% and the general material designation at 10.1%, but both come
+    from Koha's sample data, which over-represents Anglophone technical
+    and literary titles. Neither figure predicts a Cambodian academic
+    collection (§15.4).
 14. **Both corpora are Koha sample data.** The UNIMARC set is larger
    (4,849) and so carries less sampling error than the MARC21 set, but
    it is still synthetic and skewed — 94.6% French, 8.6% sound
