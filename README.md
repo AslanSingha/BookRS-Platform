@@ -261,8 +261,17 @@ regardless of the nonce.
 **Options.** `data-source-id` is required when more than one library is
 configured, because record identifiers are unique within a source rather
 than across sources. `data-limit` sets how many suggestions to show
-(default 6), and `data-heading` changes the panel title (default
-"Readers also borrowed").
+(default 6), and `data-heading` sets the panel title.
+
+**The default title depends on the data.** A panel headed "Readers also
+borrowed" is a claim about this library's patrons, so the widget only
+makes it when every suggestion shown is backed by circulation; otherwise
+it reads "Related in this catalogue", and the individual suggestions
+that borrowing does back are marked. Setting `data-heading` overrides
+that judgement and fixes one wording for every panel — reasonable if
+your catalogue has circulation throughout, less so if it has none.
+Alternatives that stay true in either case: `Similar books`, `You might
+also like`.
 
 **Placement.** The widget appends to the first of `#bookrs-recommendations`,
 the theme's main content container, or the page body. A library wanting

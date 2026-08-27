@@ -23,7 +23,18 @@
   var API = (script.getAttribute("data-api") || "").replace(/\/$/, "");
   var SOURCE_ID = script.getAttribute("data-source-id") || "";
   var LIMIT = parseInt(script.getAttribute("data-limit") || "6", 10);
-  var HEADING = script.getAttribute("data-heading") || "Readers also borrowed";
+  /* Two headings, because the panel is not always making the same
+   * claim. "Readers also borrowed" is a statement about this library's
+   * patrons; when no result carries circulation evidence it is simply
+   * false, and a patron cannot tell. The semantic heading is true in
+   * every case, so it is the default and the borrowing claim is earned
+   * rather than assumed.
+   *
+   * An explicit data-heading always wins: a library that has chosen its
+   * own wording knows its own catalogue. */
+  var HEADING = script.getAttribute("data-heading");
+  var HEADING_CONTENT = "Related in this catalogue";
+  var HEADING_BORROWED = "Readers also borrowed";
   if (!API) { return; }
 
   /* Koha detail pages carry the record id in the query string. Other
@@ -58,6 +69,12 @@
       item.appendChild(element("span", "bookrs-author", work.authors[0]));
     }
 
+    /* Marked only where circulation actually backs this result. Absent
+     * on the rest, which is most of them on a sparse catalogue. */
+    if (work.signal === "hybrid") {
+      item.appendChild(element("span", "bookrs-signal", "Borrowed together"));
+    }
+
     /* Availability comes from the last catalogue sync, not a live
      * check, so it is described as "on the shelf" rather than promised
      * as current. */
@@ -75,11 +92,29 @@
     return item;
   }
 
+  /* The borrowing claim holds only if every result shown carries
+   * collaborative evidence of its own. A mixed panel gets the semantic
+   * heading and marks the individual results that were borrowed
+   * together -- overclaiming on behalf of a library's patrons is worse
+   * than underclaiming. */
+  function heading(results) {
+    if (HEADING) { return HEADING; }
+    /* The length check is unreachable from render(), which returns
+     * early on an empty list. It stays because [].every() is true, so
+     * any future caller reaching heading() directly with no results
+     * would get the borrowing claim -- the strongest statement, from
+     * the weakest evidence. */
+    var all = results.length > 0 && results.every(function (work) {
+      return work.signal === "hybrid";
+    });
+    return all ? HEADING_BORROWED : HEADING_CONTENT;
+  }
+
   function render(results) {
     if (!results.length) { return; }
 
     var panel = element("div", "bookrs-panel");
-    panel.appendChild(element("h3", "bookrs-heading", HEADING));
+    panel.appendChild(element("h3", "bookrs-heading", heading(results)));
     var list = element("ul", "bookrs-list");
     results.forEach(function (work) { list.appendChild(card(work)); });
     panel.appendChild(list);
@@ -100,6 +135,7 @@
     css.textContent = [
       ".bookrs-panel{margin:1.5em 0;padding:1em 0;border-top:1px solid #ddd}",
       ".bookrs-heading{margin:0 0 .75em;font-size:1.05em}",
+      ".bookrs-signal{display:block;font-size:.8em;opacity:.7}",
       ".bookrs-list{list-style:none;margin:0;padding:0;display:grid;",
       "  grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:.75em}",
       ".bookrs-item{padding:.6em .7em;border:1px solid #e3e3e3;border-radius:4px;",
