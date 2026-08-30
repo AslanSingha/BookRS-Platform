@@ -169,3 +169,109 @@ class TestRegression:
             "the embedder would receive a romanisation, which is not a "
             "string in any language the model was trained on"
         )
+
+
+class TestFieldMapIntegration:
+    """The resolver wired into map_record.
+
+    Fixtures mirror the structure of the corpus's only 880-bearing
+    record, including its standalone 590 linkage, which must not be
+    paired to anything.
+    """
+
+    NS = "http://www.loc.gov/MARC21/slim"
+
+    def _record(self, title_245, title_880, *, extra=""):
+        import xml.etree.ElementTree as ET
+        xml = f"""<record xmlns="{self.NS}">
+          <datafield tag="245" ind1="1" ind2="0">
+            <subfield code="6">880-03</subfield>
+            <subfield code="a">{title_245}</subfield>
+          </datafield>
+          <datafield tag="880" ind1="1" ind2="0">
+            <subfield code="6">245-03/(2/r</subfield>
+            <subfield code="a">{title_880}</subfield>
+          </datafield>
+          {extra}
+        </record>"""
+        return ET.fromstring(xml)
+
+    def _map(self, record):
+        from bookrs.ingestion.fieldmap import map_record
+        from bookrs.ingestion.flavour import Flavour
+        return map_record(record, Flavour.MARC21, "TEST:1")
+
+    def test_hebrew_alternate_is_extracted(self):
+        work = self._map(self._record(HEB_ROMAN, HEB_TITLE))
+        assert work.title == HEB_ROMAN
+        assert work.title_alternate == HEB_TITLE
+
+    def test_khmer_alternate_is_extracted(self):
+        work = self._map(self._record(KHM_ROMAN, KHM_TITLE))
+        assert work.title_alternate == KHM_TITLE
+
+    def test_reversed_cataloguing_direction(self):
+        """Khmer in 245, romanisation in 880 -- the reverse of the
+        Hebrew record, and what a library cataloguing natively would
+        produce."""
+        work = self._map(self._record(KHM_TITLE, KHM_ROMAN))
+        embed, _ = prefer_script(work.title, work.title_alternate)
+        assert embed == KHM_TITLE
+
+    def test_record_without_880_is_unchanged(self):
+        import xml.etree.ElementTree as ET
+        xml = f"""<record xmlns="{self.NS}">
+          <datafield tag="245" ind1="1" ind2="0">
+            <subfield code="a">An ordinary title</subfield>
+          </datafield>
+        </record>"""
+        work = self._map(ET.fromstring(xml))
+        assert work.title == "An ordinary title"
+        assert work.title_alternate == ""
+
+    def test_standalone_880_is_not_attached(self):
+        """Occurrence 00 linked to 590, which no field claims."""
+        extra = f"""<datafield tag="880" ind1=" " ind2=" ">
+            <subfield code="6">590-00/(2</subfield>
+            <subfield code="a">Bound with something</subfield>
+          </datafield>"""
+        work = self._map(self._record(HEB_ROMAN, HEB_TITLE, extra=extra))
+        assert work.title_alternate == HEB_TITLE
+
+    def test_wrong_occurrence_does_not_pair(self):
+        import xml.etree.ElementTree as ET
+        xml = f"""<record xmlns="{self.NS}">
+          <datafield tag="245" ind1="1" ind2="0">
+            <subfield code="6">880-03</subfield>
+            <subfield code="a">{HEB_ROMAN}</subfield>
+          </datafield>
+          <datafield tag="880" ind1="1" ind2="0">
+            <subfield code="6">245-07/(2/r</subfield>
+            <subfield code="a">{HEB_TITLE}</subfield>
+          </datafield>
+        </record>"""
+        work = self._map(ET.fromstring(xml))
+        assert work.title_alternate == ""
+
+    def test_provenance_records_the_source(self):
+        work = self._map(self._record(HEB_ROMAN, HEB_TITLE))
+        assert work.provenance["title"] == "245$ab"
+        assert work.provenance["title_alternate"] == "880"
+
+    def test_unpaired_source_linkage_does_not_attach(self):
+        """A 245 whose $6 reads 880-00 claims an alternate exists but
+        names no counterpart to pair with. Attaching the 880 anyway
+        would guess."""
+        import xml.etree.ElementTree as ET
+        xml = f"""<record xmlns="{self.NS}">
+          <datafield tag="245" ind1="1" ind2="0">
+            <subfield code="6">880-00</subfield>
+            <subfield code="a">{HEB_ROMAN}</subfield>
+          </datafield>
+          <datafield tag="880" ind1="1" ind2="0">
+            <subfield code="6">245-00/(2/r</subfield>
+            <subfield code="a">{HEB_TITLE}</subfield>
+          </datafield>
+        </record>"""
+        work = self._map(ET.fromstring(xml))
+        assert work.title_alternate == ""

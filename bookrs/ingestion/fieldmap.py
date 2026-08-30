@@ -19,6 +19,7 @@ from xml.etree import ElementTree as ET
 
 from bookrs.ingestion.flavour import Flavour
 from bookrs.ingestion.language import detect_languages
+from bookrs.ingestion.altscript import parse_linkage, prefer_script
 from bookrs.ingestion.normalize import (
     clean_isbn, join_title, strip_isbd, strip_nonfiling,
 )
@@ -180,6 +181,18 @@ class Work:
     source_record_id: str
     flavour: Flavour
     title: str = ""
+    # The same title in its other script, from a linked 880 field, or ""
+    # when the record carries only one representation.
+    #
+    # Both are kept because they serve different consumers. The embedder
+    # needs the form that carries language: a romanisation encodes into
+    # a confident-looking vector that means very little, because it is
+    # not a string in any language the model was trained on. Search
+    # needs both, because a patron may type either.
+    #
+    # Which of the two is the romanisation is not fixed by the standard
+    # and is decided by inspecting the text, not by field number.
+    title_alternate: str = ""
     authors: list[str] = dc_field(default_factory=list)
     isbns: list[str] = dc_field(default_factory=list)
     subjects: list[str] = dc_field(default_factory=list)
@@ -205,6 +218,45 @@ class Work:
     # far easier to diagnose when you can see it came from 200$a rather
     # than 245$a.
     provenance: dict[str, str] = dc_field(default_factory=dict)
+
+
+def _alternate(record: ET.Element, tag: str, six: str | None,
+               codes: tuple[str, ...]) -> str:
+    """The 880 counterpart of a field, joined from the same subfields.
+
+    Returns "" when the field carries no `$6`, when the linkage is
+    malformed, or when no matching 880 is present. Any of those is an
+    ordinary record rather than an error.
+    """
+    link = parse_linkage(six)
+    if link is None or link.standalone:
+        return ""
+
+    ns = f"{{{MARCXML_NS}}}"
+    for field in _fields(record, "880"):
+        back = next(
+            (s.text for s in field.findall(f"{ns}subfield")
+             if s.get("code") == "6"),
+            None,
+        )
+        target = parse_linkage(back)
+        # Paired on tag AND occurrence. A record with two 880s both
+        # linked to 245 would otherwise resolve both to whichever came
+        # first, attaching the wrong script with no error to notice.
+        if target is None:
+            continue
+        if target.tag == tag and target.occurrence == link.occurrence:
+            if parts := _subfields(field, codes):
+                return strip_nonfiling(join_title(parts))
+    return ""
+
+
+def _subfield_6(field: ET.Element) -> str | None:
+    ns = f"{{{MARCXML_NS}}}"
+    for sub in field.findall(f"{ns}subfield"):
+        if sub.get("code") == "6":
+            return sub.text
+    return None
 
 
 def _fields(record: ET.Element, tag: str) -> list[ET.Element]:
@@ -295,6 +347,16 @@ def map_record(marc_record: ET.Element, flavour: Flavour,
             work.title = strip_nonfiling(join_title(parts))
             work.provenance["title"] = f"{tag}${''.join(codes)}"
             used.add(tag)
+
+            # A record catalogued in a non-Latin script commonly carries
+            # its title twice: a romanisation here, and the original in
+            # a linked 880. Reading only this field stores the
+            # transliteration and discards the language.
+            alternate = _alternate(marc_record, tag, _subfield_6(field), codes)
+            if alternate:
+                work.title_alternate = alternate
+                work.provenance["title_alternate"] = "880"
+                used.add("880")
             break
 
     for role, (tag, codes) in (("author", fm.author), ("added", fm.added_authors)):
