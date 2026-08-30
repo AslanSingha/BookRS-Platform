@@ -134,6 +134,20 @@ def health() -> dict:
     A library's monitoring needs more than 'the process is up' -- an
     empty catalogue or a missing embedding run are the failures worth
     catching, and both are visible here.
+
+    Cost, measured on the 436-work corpus: 0.32 ms for the query, 3 ms
+    end to end. Two of the three counts are index-only scans (works via
+    works_source_idx, embeddings via its primary key), so they scale
+    with index size rather than row width. The third, on items, is a
+    sequential scan -- no index exists that the planner can count from.
+
+    That is the one that grows: perhaps 700,000 rows on the 300,000-work
+    catalogue the README extrapolates to, on an endpoint that is
+    unauthenticated and is exactly what monitoring polls. Left alone
+    deliberately. An index added so a health check can count faster
+    costs write throughput on every item row during a harvest, to fix a
+    query no real deployment has yet measured as slow. Revisit with a
+    pilot, not before.
     """
     with pool.connection() as conn:
         works, items, vectors = conn.execute(
