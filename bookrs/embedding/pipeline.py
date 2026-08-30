@@ -32,7 +32,8 @@ class EmbedStats:
 # composition. LEFT JOIN rather than NOT EXISTS so all three cases fall
 # out of one scan.
 _STALE = """
-    SELECT w.id, w.title, w.subjects, w.summary, w.contents, w.content_hash
+    SELECT w.id, w.title, w.subjects, w.summary, w.contents, w.content_hash,
+           w.title_alternate
     FROM works w
     LEFT JOIN embeddings e ON e.work_id = w.id
     WHERE w.deleted_at IS NULL
@@ -68,9 +69,11 @@ def embed_stale(conn: psycopg.Connection, encoder: Encoder, *,
             stats.considered += len(rows)
 
             prepared = []
-            for work_id, title, subjects, summary, contents, content_hash in rows:
+            for (work_id, title, subjects, summary, contents, content_hash,
+                 title_alternate) in rows:
                 text = build_text(title or "", subjects or [],
-                                  summary or "", contents or "")
+                                  summary or "", contents or "",
+                                  title_alternate or "")
                 if not text.core and not text.description:
                     # No title and no subjects. Encoding an empty string
                     # yields a vector that is identical for every such

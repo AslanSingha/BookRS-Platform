@@ -26,6 +26,8 @@ from dataclasses import dataclass
 # Subdivisions within one heading are already joined by an em dash by
 # the field mapper. Distinct headings are separated by a period so the
 # assembled text reads as sentences rather than a list.
+from bookrs.ingestion.altscript import prefer_script
+
 HEADING_SEPARATOR = ". "
 
 
@@ -58,7 +60,7 @@ class WorkText:
 
 
 def build_text(title: str, subjects: list[str], summary: str = "",
-               contents: str = "") -> WorkText:
+               contents: str = "", title_alternate: str = "") -> WorkText:
     """Assemble the encodable text for one work.
 
     ``contents`` (MARC 505/327 table-of-contents notes) is accepted and
@@ -67,6 +69,21 @@ def build_text(title: str, subjects: list[str], summary: str = "",
     corpus -- but for the records that carry it, it may be the richest
     text available.
     """
+    # Where a record carries its title in two scripts, encode the one
+    # that carries language rather than a transliteration of it.
+    #
+    # Which of the two is the romanisation is not fixed by the standard
+    # -- a library cataloguing natively in Khmer would put Khmer in 245
+    # and the romanisation in the linked 880, the reverse of the Hebrew
+    # record in the reference corpus. So the choice is made by
+    # inspecting the text, not by field number.
+    #
+    # Only the embedding side is affected. The romanisation stays in
+    # `title` for display and is indexed for search, so a patron may
+    # still type either form.
+    if title_alternate.strip():
+        title, _ = prefer_script(title, title_alternate)
+
     core_parts = [title.strip()] if title.strip() else []
     core_parts.extend(s.strip() for s in subjects if s.strip())
 

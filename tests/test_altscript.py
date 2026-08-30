@@ -275,3 +275,63 @@ class TestFieldMapIntegration:
         </record>"""
         work = self._map(ET.fromstring(xml))
         assert work.title_alternate == ""
+
+
+class TestEmbeddingComposition:
+    """What the encoder receives.
+
+    This is where the whole 880 thread pays off. A transliteration is
+    not a string in any language the model was trained on, so encoding
+    it produces a confident vector carrying little meaning -- and it
+    does so on exactly the records that justified choosing a
+    multilingual model over an English-only one.
+    """
+
+    def _core(self, title, alternate="", subjects=None):
+        from bookrs.embedding.text import build_text
+        return build_text(title, subjects or [],
+                          title_alternate=alternate).core
+
+    def test_hebrew_is_encoded_not_the_romanisation(self):
+        assert self._core(HEB_ROMAN, HEB_TITLE) == HEB_TITLE
+
+    def test_khmer_is_encoded_not_the_romanisation(self):
+        assert self._core(KHM_ROMAN, KHM_TITLE) == KHM_TITLE
+
+    def test_reversed_cataloguing_still_encodes_the_script(self):
+        """Khmer in 245, romanisation in 880."""
+        assert self._core(KHM_TITLE, KHM_ROMAN) == KHM_TITLE
+
+    def test_no_alternate_leaves_the_title_alone(self):
+        assert self._core("An ordinary title") == "An ordinary title"
+
+    def test_empty_alternate_leaves_the_title_alone(self):
+        assert self._core("An ordinary title", "   ") == "An ordinary title"
+
+    def test_subjects_still_join_the_core(self):
+        core = self._core(HEB_ROMAN, HEB_TITLE, ["Hasidism", "Homiletics"])
+        assert HEB_TITLE in core
+        assert "Hasidism" in core and "Homiletics" in core
+
+    def test_the_romanisation_does_not_reach_the_encoder(self):
+        """Including both would spend sequence budget on a string the
+        model cannot use, and dilute the half it can."""
+        assert HEB_ROMAN not in self._core(HEB_ROMAN, HEB_TITLE)
+
+    def test_title_only_detection_is_unaffected(self):
+        from bookrs.embedding.text import build_text
+        text = build_text(HEB_ROMAN, [], title_alternate=HEB_TITLE)
+        assert text.is_title_only is True
+
+    def test_two_latin_forms_keep_the_cataloguer_ordering(self):
+        """Both representations Latin -- a parallel title rather than a
+        transliteration. Nothing justifies overturning the cataloguer's
+        ordering, so 245 wins. This is the case that distinguishes
+        prefer_script(title, alternate) from its arguments reversed:
+        where one form is non-Latin, either order yields the same
+        answer.
+        """
+        assert self._core("Primary title", "Parallel title") == "Primary title"
+
+    def test_two_non_latin_forms_keep_the_cataloguer_ordering(self):
+        assert self._core(KHM_TITLE, HEB_TITLE) == KHM_TITLE
