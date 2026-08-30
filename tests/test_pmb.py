@@ -139,7 +139,13 @@ class TestEndToEnd:
     def test_unimarc_field_map_applies_unchanged(self, work):
         """The point of translating rather than writing a new parser:
         PMB uses the same UNIMARC tag numbers."""
-        assert work.provenance["title"] == "200$ae"
+        # Tag, not the exact subfield set. The claim is that PMB uses
+        # UNIMARC's tag numbers; which subfields the map reads from 200
+        # is a separate decision that has since grown to include part
+        # designators, and pinning it here made an unrelated mapping
+        # change look like a PMB regression.
+        assert work.provenance["title"].startswith("200$")
+        assert set("ae") <= set(work.provenance["title"].split("$")[1])
         assert work.provenance["authors"] == "700$ab"
         assert work.provenance["isbns"] == "010$a"
         assert work.provenance["publication"] == "210"

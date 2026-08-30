@@ -51,7 +51,8 @@ log = logging.getLogger(__name__)
 #      bytes, so content_hash is unchanged, so every affected work is
 #      reported unchanged and skipped -- exactly the failure that
 #      created this constant at version 2.
-MAPPER_VERSION = 3
+#   4  extract 245$n/$p and 200$h/$i part designators into the title
+MAPPER_VERSION = 4
 
 # 'c1993.' is a copyright date and the commonest form in the reference
 # corpus (91 of 411). \b does not match between 'c' and '1', so a digit
@@ -136,7 +137,14 @@ class FieldMap:
 # 245$h is the medium designator ("[electronic resource]") and carries
 # ISBD punctuation like the title parts, but is not part of the title.
 MARC21 = FieldMap(
-    title=("245", ("a", "b")),
+    # $n and $p are the part designators. Without them six records in
+    # the reference corpus stored a bare series name -- "Philippics.",
+    # "TCP/IP illustrated." -- and a second volume was indistinguishable
+    # from a second edition (see docs/marc-field-analysis.md 15.4).
+    #
+    # $h, the medium designator ("[electronic resource]"), stays out: it
+    # describes the carrier, not the work.
+    title=("245", ("a", "b", "n", "p")),
     author=("100", ("a",)),
     added_authors=("700", ("a",)),
     isbn=("020", ("a",)),
@@ -162,7 +170,12 @@ MARC21 = FieldMap(
 # occurrences) and date is 210$d (346), where MARC21 uses 260$b and
 # 260$c respectively.
 UNIMARC = FieldMap(
-    title=("200", ("a", "e")),
+    # $h and $i are UNIMARC's part designators, the counterparts of
+    # MARC21 $n and $p. Their frequency here is UNMEASURED: the part
+    # profile covered the MARC21 corpus only. Included because omitting
+    # a known field would be a deliberate gap, and harmless where absent
+    # -- but the 1.4% figure does not transfer.
+    title=("200", ("a", "e", "h", "i")),
     author=("700", ("a", "b")),
     added_authors=("701", ("a", "b")),
     isbn=("010", ("a",)),
@@ -251,8 +264,8 @@ def _alternate(record: ET.Element, tag: str, six: str | None,
         if target is None:
             continue
         if target.tag == tag and target.occurrence == link.occurrence:
-            if parts := _subfields(field, codes):
-                return strip_nonfiling(join_title(parts))
+            if assembled := _assemble_title(field, codes):
+                return strip_nonfiling(assembled)
     return ""
 
 
@@ -276,6 +289,48 @@ def _subfields(field: ET.Element, codes: tuple[str, ...]) -> list[str]:
         for sub in field.findall(f"{ns}subfield")
         if sub.get("code") in codes
     ]
+
+
+#: ISBD punctuation introducing each title subfield.
+#:
+#: join_title() separates every part with " : ", which is right for a
+#: subtitle and wrong for a part designator: "TCP/IP illustrated : Vol.
+#: 2 : The implementation" rather than "TCP/IP illustrated. Vol. 2, The
+#: implementation". The punctuation is prescribed per subfield, so it is
+#: applied per subfield.
+_TITLE_PUNCTUATION = {
+    "b": " : ",   # MARC21 remainder of title
+    "e": " : ",   # UNIMARC other title information
+    "n": ". ",    # MARC21 number of part
+    "p": ", ",    # MARC21 name of part
+    "h": ". ",    # UNIMARC number of part
+    "i": ", ",    # UNIMARC name of part
+}
+
+
+def _assemble_title(field: ET.Element, codes: tuple[str, ...]) -> str:
+    """Join a title field's subfields with the punctuation each takes.
+
+    Subfields are read in document order, which is the order the
+    standard prescribes -- $a $n $p $b, so a part designator precedes
+    the remainder of the title rather than trailing it. Sorting by code
+    would reorder them into nonsense.
+    """
+    ns = f"{{{MARCXML_NS}}}"
+    parts: list[tuple[str, str]] = []
+    for sub in field.findall(f"{ns}subfield"):
+        code = sub.get("code")
+        if code not in codes:
+            continue
+        if text := strip_isbd(sub.text or ""):
+            parts.append((code, text))
+
+    if not parts:
+        return ""
+    assembled = parts[0][1]
+    for code, text in parts[1:]:
+        assembled += _TITLE_PUNCTUATION.get(code, " : ") + text
+    return assembled
 
 
 def _first_text(record: ET.Element, tag: str, codes: tuple[str, ...]) -> str:
@@ -348,8 +403,8 @@ def map_record(marc_record: ET.Element, flavour: Flavour,
 
     tag, codes = fm.title
     for field in _fields(marc_record, tag):
-        if parts := _subfields(field, codes):
-            work.title = strip_nonfiling(join_title(parts))
+        if assembled := _assemble_title(field, codes):
+            work.title = strip_nonfiling(assembled)
             work.provenance["title"] = f"{tag}${''.join(codes)}"
             used.add(tag)
 
