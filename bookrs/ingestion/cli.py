@@ -16,6 +16,7 @@ import time
 import psycopg
 
 from bookrs.db.loader import ensure_source, load_works
+from bookrs.db.migrations import apply_migrations
 from bookrs.ingestion.harvest import HarvestConfig
 from bookrs.ingestion.pipeline import ingest
 from bookrs.ingestion.preflight import PreflightError
@@ -94,6 +95,15 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     try:
         with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+            # schema.sql is an initdb script: it runs once, on an empty
+            # database, and nothing re-applies it. Without this, a schema
+            # change could only ever reach a fresh install, and a library
+            # upgrading would have to drop its database and re-harvest to
+            # pick up an added column.
+            if applied := apply_migrations(conn):
+                log.info("applied schema migrations: %s",
+                         ", ".join(str(v) for v in applied))
+
             # What the previous run saw, so a sudden loss of holdings is
             # treated as a configuration regression rather than accepted.
             previous = conn.execute(

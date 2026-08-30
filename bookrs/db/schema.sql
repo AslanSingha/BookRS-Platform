@@ -64,6 +64,12 @@ CREATE TABLE works (
     source_record_id VARCHAR(255) NOT NULL,
 
     title            TEXT         NOT NULL DEFAULT '',   -- measured max 391
+    -- The same title in its other script, from a linked MARC 880.
+    -- Kept alongside rather than instead: the embedder needs the form
+    -- carrying language, search needs both, and which of the two is a
+    -- romanisation depends on the cataloguing agency rather than on
+    -- the field number.
+    title_alternate  TEXT         NOT NULL DEFAULT '',
     publisher        VARCHAR(255)          DEFAULT '',   -- measured max 199
     publication_year SMALLINT,
 
@@ -241,6 +247,11 @@ CREATE INDEX embeddings_title_only_idx
 -- ---------------------------------------------------------------
 CREATE INDEX works_title_trgm_idx
     ON works USING GIN (public.immutable_unaccent(lower(title)) gin_trgm_ops);
+
+-- The alternate script is searched on exactly the same terms, so a
+-- patron may type either representation and find the record.
+CREATE INDEX works_title_alternate_trgm_idx
+    ON works USING GIN (public.immutable_unaccent(lower(title_alternate)) gin_trgm_ops);
 
 -- Authors are an array; the index covers them joined, which is what a
 -- patron types -- they search for a name, not for one array element.

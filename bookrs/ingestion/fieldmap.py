@@ -46,7 +46,12 @@ log = logging.getLogger(__name__)
 # History:
 #   1  initial
 #   2  strip non-filing brackets from titles (UNIMARC "[L\']aurore")
-MAPPER_VERSION = 2
+#   3  extract the linked 880 alternate-script title. Without this bump
+#      the fix reaches no existing catalogue: Koha serves the same
+#      bytes, so content_hash is unchanged, so every affected work is
+#      reported unchanged and skipped -- exactly the failure that
+#      created this constant at version 2.
+MAPPER_VERSION = 3
 
 # 'c1993.' is a copyright date and the commonest form in the reference
 # corpus (91 of 411). \b does not match between 'c' and '1', so a digit

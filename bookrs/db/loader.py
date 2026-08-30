@@ -79,13 +79,14 @@ def _upsert_work(conn: psycopg.Connection, source_id: int, work: Work
 
     row = conn.execute(
         """
-        INSERT INTO works (source_id, source_record_id, title, publisher,
-                           publication_year, summary, contents, authors,
-                           subjects, isbns, languages, provenance,
+        INSERT INTO works (source_id, source_record_id, title, title_alternate,
+                           publisher, publication_year, summary, contents,
+                           authors, subjects, isbns, languages, provenance,
                            marc_005, content_hash, items_hash)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (source_id, source_record_id) DO UPDATE SET
             title = EXCLUDED.title,
+            title_alternate = EXCLUDED.title_alternate,
             publisher = EXCLUDED.publisher,
             publication_year = EXCLUDED.publication_year,
             summary = EXCLUDED.summary,
@@ -102,7 +103,8 @@ def _upsert_work(conn: psycopg.Connection, source_id: int, work: Work
             deleted_at = NULL
         RETURNING id, (xmax = 0) AS was_insert
         """,
-        (source_id, work.source_record_id, work.title, work.publisher,
+        (source_id, work.source_record_id, work.title, work.title_alternate,
+         work.publisher,
          work.publication_year, work.summary, work.contents, work.authors,
          work.subjects, work.isbns, work.languages,
          psycopg.types.json.Jsonb(work.provenance),
