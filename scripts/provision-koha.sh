@@ -32,7 +32,7 @@
 #                harvested records survive.
 #
 # Environment:  KTD_HOME (required), OPAC_URL, KOHA_INSTANCE,
-#               OAI_ARCHIVE_ID, TIMEOUT
+#               OAI_ARCHIVE_ID, TIMEOUT, KTD_ARGS
 
 set -euo pipefail
 
@@ -70,8 +70,20 @@ if [[ "${1:-}" == "--recreate" ]]; then
   docker rm -f "$KOHA_C" "$MC_C" >/dev/null 2>&1 || true
 fi
 
-say "bringing the instance up"
-( cd "$KTD_HOME" && ktd --persistent-db up -d >/dev/null 2>&1 )
+# KTD_ARGS lets a second instance be provisioned without editing this
+# line. The UNIMARC instance runs behind KTD's Traefik proxy under its
+# own name, which is a different invocation entirely:
+#
+#   KOHA_INSTANCE=unimarc \
+#   OPAC_URL=http://unimarc.localhost \
+#   KTD_ARGS="--proxy --name unimarc" \
+#   KOHA_MARC_FLAVOUR=unimarc \
+#     scripts/provision-koha.sh --recreate
+KTD_ARGS="${KTD_ARGS:-}"
+
+say "bringing the instance up${KTD_ARGS:+ (ktd $KTD_ARGS)}"
+# shellcheck disable=SC2086  -- word splitting is the point here
+( cd "$KTD_HOME" && ktd $KTD_ARGS --persistent-db up -d >/dev/null 2>&1 )
 
 say "waiting for the container to appear"
 state=missing
