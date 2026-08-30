@@ -323,7 +323,7 @@ and it is **absent from 53 of 436 records**.
 | 264 | Publication (RDA) | 2.3% | 4 |
 | 880 | Alternate script | 0.2% | 1 |
 
-Full table available by re-running the profiling script (§17.2).
+Full table available by re-running the profiling script (§18.2).
 
 ### 5.2 Cataloguing-standard drift
 
@@ -600,7 +600,7 @@ A second instance was started with
 confirmed via `C4::Context->preference('marcflavour') == 'UNIMARC'`.
 Corpus: **4,849 records**, harvested in 97 pages.
 
-> The 100-page safety limit in the harvest script (§17.1) was nearly
+> The 100-page safety limit in the harvest script (§18.1) was nearly
 > reached by a *sample* corpus. A real library would blow straight
 > through it. The production adapter needs a generous bound or, better,
 > a time budget rather than a page count.
@@ -1053,7 +1053,7 @@ broken measurement.
 > **Adapter requirement.** All record content is read through an XML
 > parser. No regular expressions over MARC XML, including for quick
 > checks or diagnostics. The `<header>` count in the harvest script
-> (§17.1) is the sole exception: it counts a structural element in the
+> (§18.1) is the sole exception: it counts a structural element in the
 > OAI envelope for progress reporting only, never record content, and
 > is not used for any decision.
 
@@ -1642,7 +1642,140 @@ over a single instrument, in miniature.
 
 ---
 
-## 16. Limitations of this analysis
+## 16. Alternate-script titles, and a model given text it cannot use
+
+### 16.1 What a non-Latin record looks like
+
+One record of 436 carries MARC 880 fields — 0.2%, and the only one in
+either reference corpus. It is a 19th-century Hebrew homiletic work, and
+it holds each field twice: a romanisation in 100, 240, 245, 250 and 260,
+and the Hebrew in 880 fields linked by subfield `$6`.
+
+```
+100  $6 880-01       $a Ślez, Ts.
+245  $6 880-03       $a Maʼamar śiḥat ḥulin shel t. ṭ :
+880  $6 100-01/(2/r  $a שלעז, צ.
+880  $6 245-03/(2/r  $a מאמר שיחת חולין של ת״ח :
+```
+
+`$6` carries three parts: the linked tag, an occurrence number pairing
+the two fields, and a script and orientation code. Pairing must use tag
+**and** occurrence — a record with two 880s both linked to 245 would
+otherwise resolve both to whichever came first, attaching the wrong
+script with no error. Occurrence `00` means the field has no
+counterpart; this record carries one such 880, linked to a 590 that does
+not exist.
+
+### 16.2 The field map read 245 and ignored 880
+
+So what the pipeline stored for this record was
+`Maʼamar śiḥat ḥulin shel t. ṭ`, and the Hebrew was discarded.
+
+**That is worse than storing nothing.** An absent title is visible: the
+`is_title_only` flag reports it and coverage metrics count it. A
+transliteration looks like ordinary text. The encoder accepts it, emits
+a confident-looking 384-dimensional vector, and that vector means very
+little, because the string is not in any language the model was trained
+on — it is Hebrew wearing Latin characters.
+
+The consequence is specific rather than general. §13 selected
+`paraphrase-multilingual-MiniLM-L12-v2` over the English-only model on
+measured evidence, at the cost of a 471 MB download and a third of the
+encoding throughput. On the records that justified that choice, the
+model was receiving text it could not use, and the English-only model
+would have performed identically. **The argument for multilingual
+embeddings and the pipeline's behaviour on non-Latin records
+contradicted each other**, and nothing reported it.
+
+### 16.3 880 is not reliably "the original"
+
+The obvious rule — prefer the 880 — is wrong. Which script lands in 245
+depends on the cataloguing agency. A record created in a Latin-script
+environment romanises into 245 and puts the original in 880, as this one
+does. A library cataloguing natively in its own script may do the
+reverse, or omit 880 entirely.
+
+For a system whose stated purpose includes Cambodian libraries, the
+reverse case is the more likely one. Preference is therefore decided by
+inspecting the text — a majority-Latin test, tolerant of an acronym or a
+date inside a Khmer title — rather than by field number.
+
+### 16.4 How far apart the two forms are
+
+Both strings were encoded directly with the deployed model:
+
+| | |
+|---|---|
+| cosine(romanisation, Hebrew) | **+0.1605** |
+| overlap in the top 10 neighbours | **1 of 10** |
+
+Two encodings of the same title, near-orthogonal. The field choice is
+not a refinement; it selects almost entirely different books. Any
+assumption that a multilingual model treats a transliteration as
+equivalent to its original — which this pipeline silently made — is
+wrong by a wide margin.
+
+### 16.5 What the neighbours actually show
+
+Both retrievals are poor, and saying so matters more than the headline
+number.
+
+| Encoded from | Nearest neighbours |
+|---|---|
+| Romanisation | Irish, Scottish Gaelic and Arabic titles |
+| Hebrew | Beckett, a Dutch novel, "The Computer Bible" |
+
+The romanisation clusters with other titles that look unusual in Latin
+script — matching on orthographic strangeness, which is exactly the
+failure predicted for a string with no linguistic content. The Hebrew
+retrieves works the model recognises as European literary prose. A
+19th-century Hasidic homiletic text relates to neither.
+
+**The corpus cannot answer the quality question.** It is 436 Anglophone
+records containing nothing genuinely related to this work, so no
+retrieval could succeed regardless of which string is encoded. There is
+no correct answer for the system to find.
+
+The change therefore rests on the argument rather than on this
+measurement: a transliteration is not a string in any language; the
+multilingual model was chosen for capability that romanisations negate;
+and +0.1605 confirms the two paths genuinely diverge. Whether the chosen
+path recommends *better* needs a catalogue with related non-Latin
+records — the same pilot library every other open question waits on.
+
+### 16.6 What this cost to reach
+
+Four defects surfaced while implementing it, all of one kind: evidence
+already present in the repository, not read.
+
+- `schema.sql` explains that `unaccent()` is `STABLE`, that PostgreSQL
+  rejects `STABLE` functions in index expressions, and that an
+  `immutable_unaccent` wrapper exists for that reason. The migration
+  adding an index used `unaccent()` directly and reproduced the
+  documented failure. It also omitted `lower()`, which would have made
+  the alternate script the one field in the catalogue where search is
+  case-sensitive.
+- `MAPPER_VERSION` exists because extraction logic changing without the
+  hash changing once reported 4,849 records unchanged while every
+  extracted title had in fact changed. A new extracted field was added
+  without bumping it, and the first re-harvest reported 436 unchanged
+  and wrote nothing.
+- The test database is built from `schema.sql` at container init, so it
+  carried a schema older than the code, and eleven loader tests failed
+  against a correct loader.
+- The mutation harness reported a caught defect as surviving. A
+  same-length replacement left file size and modification time
+  unchanged, so Python reused cached bytecode and never executed the
+  mutation.
+
+The last is worth generalising beyond this section. A verification tool
+that can silently fail to verify is the same hazard as a metric that
+looks healthy on broken output (§14.7) — and it was found the same way,
+by checking a result that seemed wrong instead of accepting it.
+
+---
+
+## 17. Limitations of this analysis
 
 Stated plainly, because these bound what the findings support:
 
@@ -1711,16 +1844,23 @@ Stated plainly, because these bound what the findings support:
     from Koha's sample data, which over-represents Anglophone technical
     and literary titles. Neither figure predicts a Cambodian academic
     collection (§15.4).
-14. **Both corpora are Koha sample data.** The UNIMARC set is larger
+14. **Alternate-script handling is verified on one record.** 0.2% of
+    the corpus, in Hebrew, in a collection containing nothing related to
+    it. The mechanism is tested on constructed Khmer records; its
+    behaviour on a real Khmer catalogue is unmeasured (§16).
+15. **MARC 880 is handled for titles only.** The reference record links
+    880s to its author, uniform title, edition and publication fields as
+    well. Those still store the romanisation.
+16. **Both corpora are Koha sample data.** The UNIMARC set is larger
    (4,849) and so carries less sampling error than the MARC21 set, but
    it is still synthetic and skewed — 94.6% French, 8.6% sound
    recordings.
 
 ---
 
-## 17. Appendix — scripts
+## 18. Appendix — scripts
 
-### 17.1 Harvest loop
+### 18.1 Harvest loop
 
 ```bash
 #!/bin/bash
@@ -1750,7 +1890,7 @@ Two production-relevant details: the token is URL-encoded because it
 contains slashes, and the safety stop prevents a malformed token from
 looping forever.
 
-### 17.2 Field profiling
+### 18.2 Field profiling
 
 The frequency table (§5.1) and coverage analysis (§6, §7) were produced
 by Python scripts using `xml.etree.ElementTree` against the harvested
