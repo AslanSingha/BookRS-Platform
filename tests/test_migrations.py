@@ -99,3 +99,4 @@ class TestDefinitions:
         for migration in MIGRATIONS:
             assert migration.description.strip()
             assert migration.statements
+

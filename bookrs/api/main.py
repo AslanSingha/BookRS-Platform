@@ -8,6 +8,7 @@ the last sync.
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -19,8 +20,11 @@ from psycopg_pool import ConnectionPool
 from fastapi.responses import FileResponse
 
 from bookrs.api import queries
+from bookrs.db.migrations import apply_migrations
 
 _STATIC = os.path.join(os.path.dirname(__file__), "static")
+
+log = logging.getLogger("bookrs.api")
 
 pool: ConnectionPool | None = None
 
@@ -30,6 +34,25 @@ async def lifespan(app: FastAPI):
     global pool
     pool = ConnectionPool(os.environ["DATABASE_URL"], min_size=1, max_size=8,
                           open=True)
+
+    # Migrations run here as well as in the harvest CLI, because upgrade
+    # order is not something a library should have to know. Pulling a
+    # new version restarts this service immediately; the next harvest
+    # may be hours away, and until it ran the API would be querying
+    # columns that do not exist yet.
+    #
+    # This does not contradict the read-only integration principle,
+    # which is about never writing to the *library's ILS*. This database
+    # is ours.
+    #
+    # Concurrent starts are safe: the ledger's primary key means a
+    # second process attempting the same version fails its insert and
+    # rolls back that migration alone.
+    with pool.connection() as conn:
+        if applied := apply_migrations(conn):
+            log.info("applied schema migrations: %s",
+                     ", ".join(str(v) for v in applied))
+
     yield
     pool.close()
 
