@@ -33,3 +33,8 @@ page_*.xml
 
 # Windows alternate-data-stream markers, created on download
 *:Zone.Identifier
+
+# Report generator lives beside the repo, not in it: the report names
+# an outstanding correction to a supervisor, and this repository is public.
+report/
+BookRS-Platform_Technical_Report.docx
