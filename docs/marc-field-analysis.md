@@ -1576,42 +1576,88 @@ corpus, and each fails on a case another handles:
 |---|---|
 | Embedding cosine | Genuine duplicates where one record is title-only, which embed apart (0.862, 0.859). The metadata asymmetry that produces duplicate records is what makes their embeddings diverge. |
 | ISBN match | Two editions of one work carry different ISBNs — `9780670026623` and `9781780335797` for the same book. |
-| Title + author | Two volumes of *The art of computer programming* share both. Suppression would silently hide a distinct book. |
+| Title + author | Two volumes of *The art of computer programming* share both, because neither record carries a part designator. Suppression would silently hide a distinct book (§15.4.1). |
 | Publication year | 1997/2005 for the volumes, `None`/2012 for the editions. Separates neither. |
 
-What distinguishes them is **`245$n` and `$p`** — volume number and
-part name. `fieldmap.py` builds `title` from `245$a` and `$b` (UNIMARC
-`200$a`/`$e`), so the part designators never enter the schema, and raw
-MARC is not retained, so they cannot be backfilled without a
-re-harvest.
+What distinguishes a volume from an edition is **`245$n` and `$p`** —
+volume number and part name. The field map originally built `title`
+from `245$a` and `$b` alone, so the designators never entered the
+schema.
 
 **Measured on the MARC21 corpus:** 6 of 436 records carry `245$n` or
-`$p` — **1.4%**. Rare, but not hypothetical, and the sample includes
-`TCP/IP illustrated. Vol. 2, The implementation` and `UNIX network
-programming. Vol. 2` — both members of title-collision pairs above,
-whose volume designators were present in the MARC record all along and
-discarded at field mapping.
+`$p` — **1.4%**. Rare, but not hypothetical, and two of the six were
+members of title-collision pairs above, their designators present in the
+MARC record all along and discarded at field mapping.
+
+They are now extracted, with the punctuation each subfield takes: ISBD
+prescribes a full stop before a part number and a comma before a part
+name, so `TCP/IP illustrated. Vol. 2, The implementation` rather than a
+uniformly-separated join. UNIMARC `200$h`/`$i` are handled as the
+counterparts, though their frequency is unmeasured — the profile covered
+the MARC21 corpus only.
 
 Two neighbouring findings from the same profile. `245$h`, the general
-material designation, appears on **10.1%** of records and is also
-dropped; it is what makes an electronic edition indistinguishable from
-its print counterpart, and it is seven times more common than part
-designators. And one record carries `245$6`, the linkage to an `880`
+material designation, appears on **10.1%** of records and is
+deliberately excluded: it describes the carrier rather than the work,
+and including it would make an electronic edition embed differently
+from its print counterpart for a reason that is not about content. And
+one record carries `245$6`, the linkage to an `880`
 alternate-graphic-representation field — MARC21's mechanism for
-non-Latin scripts. One record here; routine in a catalogue with Khmer
-titles, and unhandled.
+non-Latin scripts, covered in §16.
 
-No suppression rule was written. Every available heuristic produces
-either false positives on Knuth or false negatives on Springsteen, and
-a ranker quietly hiding real books is worse than one showing a
-duplicate. This is an ingestion-layer gap, and the frequency of
-multi-volume sets in a real catalogue remains unmeasured.
+### 15.4.1 Re-measured after extraction
+
+Extracting the designators removed one collision — `TCP/IP illustrated`
+became `TCP/IP illustrated. Vol. 2, The implementation` and no longer
+matches its sibling — taking the corpus from 12 pairs to 11. It did not
+rescue the rule.
+
+Applying title-plus-author to the remaining 11 pairs:
+
+| Verdict | Pairs | Correct? |
+|---|---|---|
+| Suppress | 5 | 4 right, **Knuth wrong** |
+| Keep | 6 | at least 2 wrong |
+
+The Knuth pair is the instructive one. Both records read
+`The art of computer programming` by the same author, with ISBNs
+`0201896834` and `0201853922` and years 1997 and 2005. Those are
+Volume 2 and Volume 4A. **Nothing in either record says so.** Unlike
+TCP/IP, the cataloguer recorded no part designator, so the information
+that separates them was never entered.
+
+That is the sharper statement of the problem, and it is not the one this
+section originally made. Title-plus-author does not fail on volumes; it
+fails on **volumes whose designators were never catalogued** — a subset
+it cannot detect by construction. No algorithm recovers data that is
+absent from the source.
+
+The false negatives are worth naming too. `Platonis opera` / `Platonis
+Opera` (1903 and 1995) is one work in two editions and is kept, because
+the author strings do not match exactly. `Bandidas` (2006 and 2007) is
+kept for the same reason. And `Acta biológica paranaense`, a serial, is
+kept only by the accident of carrying no author at all.
+
+So the rule is wrong in **both** directions on the same eleven pairs.
+
+### 15.4.2 Why nothing is suppressed
+
+No suppression rule ships. A ranker quietly hiding real books is worse
+than one showing a duplicate, and the measurement above is on eleven
+pairs in a 436-record sample catalogue — too little to justify a
+heuristic that is demonstrably wrong in both directions.
+
+The one signal that could separate a volume from an edition is ISBN
+semantics: two ISBNs on the same title and author mean *either* a
+different edition *or* a different volume, and the ISBN itself does not
+say which. Resolving that needs an external lookup, which a self-hosted
+service with no outbound dependencies does not have.
 
 There is a deeper point underneath. The Springsteen pair is not a
 duplicate record at all — it is one work with two manifestations,
 sitting in a table whose premise is that a row is the intellectual
-work. That is the work-clustering problem, and it is not solvable with
-a threshold.
+work. That is the work-clustering problem libraries have wrestled with
+for decades, and it is not solvable with a threshold.
 
 ### 15.5 A normaliser that erased 3.9% of the catalogue
 
@@ -1837,13 +1883,18 @@ Stated plainly, because these bound what the findings support:
     reach the blend, over samples of 3 or 4 observations. That the
     branch runs is established; its behaviour at realistic coverage is
     not (§15.3).
-13. **Duplicate frequency in a real catalogue is unknown.** 12 title
-    collisions in 436 records, and the instrument that found them misses
-    the case that prompted the search. Part designators are now measured
-    at 1.4% and the general material designation at 10.1%, but both come
+13. **No duplicate-detection instrument works, and one reason is not
+    fixable in software.** 11 title collisions in 436 records after part
+    designators were extracted. Title-plus-author is wrong in both
+    directions on those 11: it suppresses two Knuth volumes whose
+    designators the cataloguer never recorded, and keeps two Plato
+    editions whose author strings differ. Where the distinguishing
+    information was never entered into the record, no algorithm recovers
+    it (§15.4.1). Duplicate frequency in a real catalogue also remains
+    unknown: 1.4% part designators and 10.1% material designations come
     from Koha's sample data, which over-represents Anglophone technical
-    and literary titles. Neither figure predicts a Cambodian academic
-    collection (§15.4).
+    and literary titles, and neither figure predicts a Cambodian
+    academic collection.
 14. **Alternate-script handling is verified on one record.** 0.2% of
     the corpus, in Hebrew, in a collection containing nothing related to
     it. The mechanism is tested on constructed Khmer records; its
