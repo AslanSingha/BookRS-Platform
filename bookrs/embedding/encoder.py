@@ -36,10 +36,25 @@ DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 # History:
 #   1  initial
 #   2  is_title_only recorded from the subject list rather than inferred
-#      from punctuation in the assembled text. Extracting MARC part
-#      designators put ". " into titles, so records with no subjects
-#      were counted as having them -- a total that moved from 120 to 119
-#      with nothing else to show for it.
+#      from punctuation in the assembled text.
+#
+#      The inference tested for ". " in the assembled string, which held
+#      only while a title could never contain one. Extracting MARC part
+#      designators put one there and moved the total from 120 to 119 --
+#      which is what made it visible, not what caused it. The bug is
+#      older: any title containing an abbreviation or an initial was
+#      already miscounted.
+#
+#      Corrected, the count is 128 of 436 -- 29.4%, which is the figure
+#      the README has always published. The old 120 was 27.5%, and that
+#      wrong number had itself been quoted downstream. The fix restored
+#      agreement between the code and its own documentation rather than
+#      changing a published result.
+#
+#      Note this is not the 34.6% in the evidence document, which counts
+#      records lacking 520, 650 and 505 directly from MARC. The embedder
+#      also accepts 651 as a subject, so it counts fewer. Two correct
+#      measurements of different things.
 EMBEDDER_VERSION = 2
 
 
