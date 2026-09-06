@@ -32,7 +32,8 @@
 #                harvested records survive.
 #
 # Environment:  KTD_HOME (required), OPAC_URL, KOHA_INSTANCE,
-#               OAI_ARCHIVE_ID, TIMEOUT, KTD_ARGS
+#               OAI_ARCHIVE_ID, TIMEOUT, KTD_ARGS, WIDGET_API,
+#               WIDGET_LIMIT, WIDGET_SOURCE_ID
 
 set -euo pipefail
 
@@ -43,6 +44,12 @@ INSTANCE="${KOHA_INSTANCE:-kohadev}"
 DB_NAME="koha_${INSTANCE}"
 CONF_PATH="/etc/koha/sites/${INSTANCE}/oaiconf.yaml"
 ARCHIVE_ID="${OAI_ARCHIVE_ID:-KOHA-OAI-TEST}"
+
+# The recommendation widget is injected through OPACUserJS. Set
+# WIDGET_API to the empty string to skip installing it.
+WIDGET_API="${WIDGET_API-http://localhost:8000}"
+WIDGET_LIMIT="${WIDGET_LIMIT:-6}"
+WIDGET_SOURCE_ID="${WIDGET_SOURCE_ID:-1}"
 
 # A warm recreate reaches ready in about a minute. A first boot after a
 # host restart does considerably more work and has been observed past
@@ -158,6 +165,43 @@ VALUES
 ON DUPLICATE KEY UPDATE value = VALUES(value);
 SQL
 
+# --- 3b. the OPAC widget -------------------------------------------
+
+# OPACUserJS is a system preference, so it survives in the volume -- but
+# only if it was ever set on THIS database. It was not on a database
+# recovered from a bare datadir, and the resulting demonstration had a
+# working API, correct CORS headers and no panel on the page, with
+# nothing to indicate why.
+#
+# Two details in the snippet are not obvious and were found the hard
+# way. OPACUserJS holds JavaScript, not HTML: Koha wraps its contents in
+# script tags, so a <script src> placed there becomes inert text. And
+# Koha serves a nonce-based CSP, so the loader copies the nonce from the
+# block it runs in -- without it an enforcing policy drops the injected
+# script with no visible error.
+if [[ -n "$WIDGET_API" ]]; then
+  say "installing the OPAC widget (WIDGET_API=${WIDGET_API})"
+  dbq "$DB_NAME" <<SQL
+INSERT INTO systempreferences (variable, value, explanation, type)
+VALUES ('OPACUserJS', '(function () {
+  var s = document.createElement("script");
+  s.src = "${WIDGET_API}/widget.js";
+  s.setAttribute("data-api", "${WIDGET_API}");
+  s.setAttribute("data-source-id", "${WIDGET_SOURCE_ID}");
+  s.setAttribute("data-limit", "${WIDGET_LIMIT}");
+  var c = document.currentScript;
+  if (c && c.nonce) { s.nonce = c.nonce; }
+  document.body.appendChild(s);
+})();', 'JavaScript injected into every OPAC page', 'Free')
+ON DUPLICATE KEY UPDATE value = VALUES(value);
+SQL
+
+  # Koha caches system preferences, so the change is invisible until
+  # Plack reloads.
+  say "restarting Plack so the preference takes effect"
+  docker exec "$KOHA_C" koha-plack --restart "$INSTANCE" >/dev/null 2>&1 || true
+fi
+
 # --- 4. the conf file, which does not survive recreation -------------
 
 say "writing ${CONF_PATH}"
@@ -214,6 +258,17 @@ biblios=$(dbq -N -B "$DB_NAME" -e 'SELECT COUNT(*) FROM biblio;' | tr -d '[:spac
 say "records in the catalogue: ${biblios}"
 if [[ "${biblios:-0}" -eq 0 ]]; then
   say "WARNING: the catalogue is empty; a harvest will return nothing"
+fi
+
+if [[ -n "$WIDGET_API" ]]; then
+  widget_len=$(dbq -N -B "$DB_NAME" -e \
+    "SELECT COALESCE(LENGTH(value),0) FROM systempreferences WHERE variable='OPACUserJS';" \
+    | tr -d '[:space:]')
+  # Checked rather than assumed: a zero here is exactly the state that
+  # produces a silent, empty recommendation panel.
+  [[ "${widget_len:-0}" -gt 0 ]] || fail "OPACUserJS is empty; the widget will not load"
+  say "OPAC widget installed (${widget_len} characters)"
+  say "  record page: ${OPAC_URL}/cgi-bin/koha/opac-detail.pl?biblionumber=4"
 fi
 
 printf '\n  Ready: %s\n' "$OAI"

@@ -47,16 +47,30 @@ class WorkText:
     core: str
     description: str = ""
 
+    #: Whether any subject heading contributed to ``core``. Recorded at
+    #: construction rather than inferred afterwards.
+    #:
+    #: This was previously derived by testing whether HEADING_SEPARATOR
+    #: appeared in ``core``, which held only while a title could never
+    #: contain ". ". Extracting MARC part designators broke that: "TCP/IP
+    #: illustrated. Vol. 2" contains the separator, so a record with no
+    #: subjects at all was counted as having them. One record silently
+    #: changed classification, and nothing but a differing total gave it
+    #: away.
+    #:
+    #: A field that is known at construction should not be re-derived
+    #: from the output. The output is lossy by design.
+    has_subjects: bool = False
+
     @property
     def is_title_only(self) -> bool:
         """True when nothing but the title was available.
 
-        Roughly a third of both reference corpora: 29.4% MARC21, 38.5%
-        UNIMARC. Callers may want to treat these differently, since a
-        title alone is a much weaker signal than the rest of the
-        catalogue provides.
+        Roughly a third of both reference corpora. Callers may want to
+        treat these differently, since a title alone is a much weaker
+        signal than the rest of the catalogue provides.
         """
-        return not self.description and HEADING_SEPARATOR not in self.core
+        return not self.description and not self.has_subjects
 
 
 def build_text(title: str, subjects: list[str], summary: str = "",
@@ -85,11 +99,13 @@ def build_text(title: str, subjects: list[str], summary: str = "",
         title, _ = prefer_script(title, title_alternate)
 
     core_parts = [title.strip()] if title.strip() else []
-    core_parts.extend(s.strip() for s in subjects if s.strip())
+    headings = [s.strip() for s in subjects if s.strip()]
+    core_parts.extend(headings)
 
     description_parts = [p.strip() for p in (summary, contents) if p.strip()]
 
     return WorkText(
         core=HEADING_SEPARATOR.join(core_parts),
         description=HEADING_SEPARATOR.join(description_parts),
+        has_subjects=bool(headings),
     )

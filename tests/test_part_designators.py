@@ -146,3 +146,56 @@ class TestMapperVersion:
         the failure that created this constant."""
         from bookrs.ingestion.fieldmap import MAPPER_VERSION
         assert MAPPER_VERSION >= 4
+
+
+class TestTitleOnlyClassification:
+    """A part designator in the title must not look like a subject heading.
+
+    is_title_only originally tested whether the heading separator ". "
+    appeared in the assembled core text. That was safe only while a
+    title could never contain one. Extracting part designators broke it:
+    "TCP/IP illustrated. Vol. 2" contains the separator, so a record with
+    no subjects was counted as having them.
+
+    The symptom was a total moving from 120 to 119. Nothing else showed
+    it, and a coverage metric that silently miscounts is worse than one
+    that is absent, because it is believed.
+    """
+
+    def _text(self, title, subjects=None, summary=""):
+        from bookrs.embedding.text import build_text
+        return build_text(title, subjects or [], summary=summary)
+
+    def test_part_designator_is_still_title_only(self):
+        t = self._text("TCP/IP illustrated. Vol. 2, The implementation")
+        assert t.is_title_only is True
+
+    def test_plain_title_is_title_only(self):
+        assert self._text("An ordinary title").is_title_only is True
+
+    def test_subjects_make_it_not_title_only(self):
+        assert self._text("A title", ["Computer science"]).is_title_only is False
+
+    def test_part_designator_with_subjects(self):
+        t = self._text("TCP/IP illustrated. Vol. 2", ["Networking"])
+        assert t.is_title_only is False
+
+    def test_summary_makes_it_not_title_only(self):
+        assert self._text("A title", summary="A description").is_title_only is False
+
+    def test_the_fact_is_recorded_not_inferred(self):
+        """The regression is only impossible if has_subjects comes from
+        the input. Deriving it from the assembled text reintroduces the
+        coupling between a title's punctuation and a subject count."""
+        t = self._text("A title", ["Computer science"])
+        assert t.has_subjects is True
+        assert self._text("A title").has_subjects is False
+
+    def test_embedder_version_covers_the_change(self):
+        """is_title_only is stored beside the vector, so a change in how
+        it is derived is a change in this stage's output even when every
+        vector is identical. Without a bump the staleness query reports
+        every row current and nothing is rewritten -- which is how the
+        miscount would have survived the fix."""
+        from bookrs.embedding.encoder import EMBEDDER_VERSION
+        assert EMBEDDER_VERSION >= 2

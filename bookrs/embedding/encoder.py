@@ -28,7 +28,19 @@ DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 # text composition, a different pooling rule. Vectors carry it so a
 # change re-embeds rather than silently mixing two vector spaces --
 # the same failure the ingestion mapper version prevents, one layer up.
-EMBEDDER_VERSION = 1
+#
+# It also covers the other columns this stage writes. is_title_only is
+# stored alongside the vector, so a change in how it is derived is a
+# change in this stage's output even when every vector is identical.
+#
+# History:
+#   1  initial
+#   2  is_title_only recorded from the subject list rather than inferred
+#      from punctuation in the assembled text. Extracting MARC part
+#      designators put ". " into titles, so records with no subjects
+#      were counted as having them -- a total that moved from 120 to 119
+#      with nothing else to show for it.
+EMBEDDER_VERSION = 2
 
 
 @dataclass
