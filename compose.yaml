@@ -127,6 +127,10 @@ services:
       # tests/test_dockerfiles.py. Without this the guards have nothing
       # to read.
       - ./docker:/app/docker:ro
+      # So is the README: a test asserts it documents the scheduling
+      # this project deliberately does not automate. Unmounted, that
+      # guard skipped, which is a guard reporting nothing.
+      - ./README.md:/app/README.md:ro
 
 volumes:
   db-data:

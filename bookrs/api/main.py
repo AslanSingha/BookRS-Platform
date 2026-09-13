@@ -2,8 +2,8 @@
 
 Read-only, and reads only BookRS-Platform's own database. It never
 contacts the library's ILS: catalogue data arrives through the
-ingestion service on a schedule, and availability here is as fresh as
-the last sync.
+ingestion service, which a library schedules on its own host, and
+availability here is as fresh as the last sync.
 """
 
 from __future__ import annotations
@@ -156,6 +156,14 @@ def health() -> dict:
             "       (SELECT count(*) FROM embeddings)"
         ).fetchone()
         last = conn.execute("SELECT max(last_harvest) FROM sources").fetchone()[0]
+        # Reported because a refit that silently stops is the failure a
+        # library would not otherwise notice. Recommendations keep being
+        # served from increasingly stale factors, plausibly and wrongly,
+        # with nothing in the output to indicate the model has not been
+        # refitted since the catalogue doubled.
+        factors, trained = conn.execute(
+            "SELECT count(*), max(trained_at) FROM work_factors"
+        ).fetchone()
     return {
         "status": "ok",
         "works": works,
@@ -163,6 +171,8 @@ def health() -> dict:
         "embeddings": vectors,
         "unembedded": works - vectors,
         "last_harvest": last.isoformat() if last else None,
+        "factorised_works": factors,
+        "last_factorised": trained.isoformat() if trained else None,
     }
 
 

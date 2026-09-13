@@ -283,6 +283,49 @@ not in the catalogue yet, no panel appears and nothing is logged to the
 page — a missing panel is a disappointment, a JavaScript error on a
 library's catalogue is a support ticket.
 
+## Keeping it up to date
+
+Three stages need to run again as a library's catalogue and circulation
+change. They run on different natural cadences, which is why they are
+three commands rather than one.
+
+| Stage | Command | Suggested cadence | Why |
+|---|---|---|---|
+| Harvest | `docker compose run --rm ingestion python -m bookrs.ingestion.cli` | Nightly | Catalogue edits are frequent and the sync is cheap — only records whose bibliography actually changed are reprocessed |
+| Embed | `docker compose run --rm embedding python -m bookrs.embedding.cli` | After each harvest | Only new or changed records are encoded, so this is usually seconds |
+| Refit | `docker compose run --rm recommend python -m bookrs.recommend.cli` | Weekly | A batch job whose output is meaningless in small increments — one new loan does not change the shape of a factor space |
+
+Each is safe to re-run. A harvest over an unchanged catalogue reports
+everything unchanged and writes nothing; an embedding run with nothing
+stale does nothing.
+
+**No scheduler is included, deliberately.** The schedule belongs on the
+library's host, alongside the cron jobs Koha already requires. A cron
+daemon inside a container fights Docker's one-process-per-container
+model, complicates restart behaviour, and — most importantly — hides its
+failures from the monitoring a library already operates. A failed host
+cron job reaches the same administrator as every other failed job.
+
+A worked example, adjusting the path and the times:
+
+```cron
+# BookRS-Platform — catalogue sync and model refit
+30 2 * * *  cd /opt/bookrs && docker compose run --rm ingestion python -m bookrs.ingestion.cli >> /var/log/bookrs-harvest.log 2>&1
+45 2 * * *  cd /opt/bookrs && docker compose run --rm embedding  python -m bookrs.embedding.cli  >> /var/log/bookrs-embed.log   2>&1
+30 3 * * 0  cd /opt/bookrs && docker compose run --rm recommend  python -m bookrs.recommend.cli  >> /var/log/bookrs-refit.log   2>&1
+```
+
+**Check that it is still happening.** `GET /health` reports
+`last_harvest`, `last_factorised` and `factorised_works`. A refit that
+silently stops is the failure worth watching for: recommendations
+continue to be served from increasingly stale factors, plausibly and
+wrongly, with nothing in the output to suggest the model has not been
+rebuilt since the catalogue doubled. Alerting on the age of
+`last_factorised` costs nothing and catches it.
+
+Before running the refit for the first time, `--dry-run` reports what
+circulation is available without touching anything.
+
 ## Running the tests
 
 ```bash
