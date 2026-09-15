@@ -40,9 +40,32 @@ set -euo pipefail
 KTD_HOME="${KTD_HOME:?KTD_HOME is not set; export it or source your KTD environment}"
 OPAC_URL="${OPAC_URL:-http://localhost:8080}"
 OAI="${OPAC_URL}/cgi-bin/koha/oai.pl"
+# Two names, deliberately kept as two variables after a real bug: an
+# earlier version of this script conflated them and always failed on a
+# second proxied instance with "instance directory MISSING".
+#
+# INSTANCE is the docker-compose PROJECT name (--name to ktd). It
+# controls container names -- ${INSTANCE}-koha-1 -- and nothing inside
+# the container knows about it.
+#
+# SITE is the Koha site name INSIDE the container -- the path under
+# /etc/koha/sites, the database name, the Linux user koha-create makes.
+# KTD hardcodes this to "kohadev" always, regardless of --name,
+# confirmed both by the project's own docs ("The default KTD instance
+# name is kohadev to match the previous behavior") and by a known
+# upstream issue where t/kohasite.t itself hardcodes 'kohadev' deeply
+# enough that changing the site name breaks Koha's own test suite. A
+# proxied instance named "unimarc" still builds
+# /etc/koha/sites/kohadev internally, never /etc/koha/sites/unimarc.
+#
+# They default to the same string, which is exactly why this went
+# unnoticed for as long as it did: on a single default instance
+# INSTANCE == SITE == "kohadev", so every call site that used the wrong
+# one still happened to produce the right value by coincidence.
 INSTANCE="${KOHA_INSTANCE:-kohadev}"
-DB_NAME="koha_${INSTANCE}"
-CONF_PATH="/etc/koha/sites/${INSTANCE}/oaiconf.yaml"
+SITE="${KOHA_SITE:-kohadev}"
+DB_NAME="koha_${SITE}"
+CONF_PATH="/etc/koha/sites/${SITE}/oaiconf.yaml"
 ARCHIVE_ID="${OAI_ARCHIVE_ID:-KOHA-OAI-TEST}"
 
 # The recommendation widget is injected through OPACUserJS. Set
@@ -133,7 +156,7 @@ until docker exec "$KOHA_C" test -d "$(dirname "$CONF_PATH")" 2>/dev/null; do
   if [[ "$state" != "running" ]]; then
     printf '\r'
     docker logs --tail 5 "$KOHA_C" 2>&1 | sed 's/^/    /'
-    fail "the container exited while starting. If the log ends with 'User ${INSTANCE}-koha already exists', re-run with --recreate: KTD runs koha-create on every start and cannot resume an existing instance."
+    fail "the container exited while starting. If the log ends with 'User ${SITE}-koha already exists', re-run with --recreate: KTD runs koha-create on every start and cannot resume an existing instance."
   fi
 
   if (( SECONDS >= deadline )); then
@@ -199,7 +222,7 @@ SQL
   # Koha caches system preferences, so the change is invisible until
   # Plack reloads.
   say "restarting Plack so the preference takes effect"
-  docker exec "$KOHA_C" koha-plack --restart "$INSTANCE" >/dev/null 2>&1 || true
+  docker exec "$KOHA_C" koha-plack --restart "$SITE" >/dev/null 2>&1 || true
 fi
 
 # --- 4. the conf file, which does not survive recreation -------------
