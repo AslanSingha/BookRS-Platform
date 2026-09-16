@@ -1729,6 +1729,61 @@ of the system is asking.** A pilot with real circulation and a
 catalogue in the thousands is what would let this distinction actually
 show up in what a patron sees.
 
+### 15.7 Why folding-in has no API route, and what would change that
+
+`folding.py`'s own docstring says this needs "a real authentication
+decision" before it is wired to anything a network can reach, and
+points here. This section is that decision — resolved on paper, not
+built, because nothing yet needs it built.
+
+**The constraint that rules out the easy answer.** The obvious design
+is: the widget, running injected into the patron's own OPAC page,
+reads whatever proves they're logged in and forwards it. That does not
+work, for a reason no amount of clever JavaScript gets around. Koha's
+OPAC session cookie is `httponly` — a flag that blocks
+`document.cookie` from ever seeing it, in any script, on any page,
+regardless of same-origin injection. The widget executes inside the
+Koha page's DOM, but that does not grant it access to a cookie flagged
+this way. There is no browser-side path to the patron's session at
+all, so no design can begin with "the widget reads the session and
+sends it."
+
+**What does work is the same shape already reached for ratings**: the
+only legitimate way into Koha's authenticated context is code that
+Koha itself runs, server-side, inside a real session — a Koha plugin.
+
+1. The patron logs into the OPAC. Unchanged; already trusted.
+2. The widget makes a same-origin request to a plugin endpoint —
+   Koha's own session cookie is sent automatically, because the
+   request never leaves Koha's origin.
+3. The plugin, running inside Koha with the patron's session already
+   verified by Koha itself, mints a short-lived signed token: the
+   patron's borrower number and an expiry, signed with a secret shared
+   only between the plugin and BookRS-Platform.
+4. The widget forwards that token — never a cookie, never a password —
+   to BookRS-Platform's API, cross-origin, over HTTPS.
+5. The API verifies the signature and expiry, extracts the borrower
+   number, and computes `patron_ref` with the same
+   `HMAC-SHA256(borrowernumber, secret)` `circulation.py` already
+   applies at harvest time — a second use of an existing secret
+   pattern, not a new one. Only then does it call `fold_in`.
+
+At no point does BookRS-Platform see a password or a session cookie,
+and at no point can the widget's own JavaScript assert an identity
+Koha did not actually authenticate — the token can only be minted by
+code Koha ran, inside a session Koha verified. The short expiry bounds
+what a captured token is worth.
+
+**Deliberately not built.** A Koha plugin is a new deployable
+component in a different language, needing installation on the
+library's side — exactly the kind of infrastructure this project has
+consistently declined to build ahead of evidence it is needed, the
+same posture already taken on the ratings plugin in §11. It becomes
+worth building when a real deployment actually wants patron-facing
+personalisation, which needs a pilot library first regardless — the
+same precondition every other open question in this document is
+waiting on.
+
 ---
 
 ## 16. Alternate-script titles, and a model given text it cannot use
