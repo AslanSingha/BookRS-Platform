@@ -1686,6 +1686,49 @@ because `+` is not alphanumeric. That pair was caught by a second
 check, not the normaliser — which is the argument for corroboration
 over a single instrument, in miniature.
 
+### 15.6 Personalisation, folded in — and a second confounding pool
+
+Folding-in — a closed-form patron vector computed at query time from
+that patron's own loans on already-factorised works, without waiting
+for the next batch refit — was exercised for the first time here. It
+is documented in `bookrs/recommend/folding.py`, not elsewhere in this
+report; this is its first appearance in the evidence record.
+
+Tested against the two patrons with the most collaborative evidence:
+17 and 7 distinct factorised works respectively, patron two sharing
+71% of their loans with patron one. Printed side by side, their top-8
+recommendation lists shared seven of eight titles — the same surface
+shape as the Springsteen finding above, and worth checking with the
+same discipline rather than accepted as "personalisation doesn't work."
+
+It measures differently from that finding, though, and the difference
+matters. Compared directly, the two folded vectors are **not**
+near-identical: cosine 0.312, real divergence, not noise. The
+overlap in the printed lists has a separate, mechanical cause. Only 30
+works carry factors at all. Patron one has already loaned 17 of those
+30, leaving 13 candidates — and the demonstration asked for a top 8,
+**61% of everything left to rank**. At that fraction, two lists drawn
+from the same tiny remaining pool will share most of their entries
+almost regardless of how different the vectors pointing into it are.
+
+So two distinct, both-true findings, worth keeping apart rather than
+collapsing into one verdict:
+
+- The mechanism is evidence-sensitive. Two patrons with genuinely
+  different, measured borrowing produce genuinely different vectors.
+- The catalogue is too small for that sensitivity to be visible in a
+  short list. A candidate pool of 13 cannot demonstrate discrimination
+  at a request size of 8, independent of how good the underlying
+  vectors are.
+
+The second finding is about corpus size, not about folding-in, and it
+recurs the "6.9% coverage" and "4 of 436 queries reach the blend"
+findings in §14 and §15.2 under a new name: **quality cannot be judged
+from output shape when the candidate pool is this thin, whichever layer
+of the system is asking.** A pilot with real circulation and a
+catalogue in the thousands is what would let this distinction actually
+show up in what a patron sees.
+
 ---
 
 ## 16. Alternate-script titles, and a model given text it cannot use
