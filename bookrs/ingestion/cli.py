@@ -13,6 +13,8 @@ import os
 import sys
 import time
 
+from dataclasses import replace
+
 import psycopg
 
 from bookrs.db.loader import ensure_source, load_works
@@ -107,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             # What the previous run saw, so a sudden loss of holdings is
             # treated as a configuration regression rather than accepted.
             previous = conn.execute(
-                "SELECT last_had_items FROM sources "
+                "SELECT last_had_items, request_headers FROM sources "
                 "WHERE base_url = %s AND metadata_prefix = %s",
                 (args.url, args.prefix),
             ).fetchone()
@@ -115,9 +117,18 @@ def main(argv: list[str] | None = None) -> int:
             if previous and previous[0] and not args.allow_missing_items:
                 expect_items = True
 
+            # Headers this endpoint has needed before. A scheduled run
+            # has no operator to remember them, and a missing Host on a
+            # proxy-routed endpoint times out rather than failing, which
+            # reads as the library being down. An explicit --header
+            # still wins: whoever is at the terminal knows more than the
+            # row does.
+            if previous and previous[1]:
+                cfg = replace(cfg, headers={**previous[1], **cfg.headers})
+
             stream, result = ingest(cfg, expect_items=expect_items)
             source_id = ensure_source(conn, name, args.url, args.prefix,
-                                      result.preflight.flavour)
+                                      result.preflight.flavour, cfg.headers)
             conn.commit()
 
             stats = load_works(conn, source_id, stream)

@@ -19,6 +19,7 @@ import logging
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 import psycopg
+from psycopg.types.json import Jsonb
 from psycopg.rows import dict_row
 
 from bookrs.ingestion.fieldmap import Work
@@ -38,17 +39,30 @@ class LoadStats:
 
 
 def ensure_source(conn: psycopg.Connection, name: str, base_url: str,
-                  metadata_prefix: str, flavour: Flavour | None) -> int:
+                  metadata_prefix: str, flavour: Flavour | None,
+                  request_headers: dict[str, str] | None = None) -> int:
+    # An empty header dict does not clear a stored one. A run that
+    # simply omitted --header should not silently strip the routing a
+    # previous run established; forgetting a flag is far more common
+    # than deliberately removing a header, and the second case can be
+    # done in SQL.
     row = conn.execute(
         """
-        INSERT INTO sources (name, base_url, metadata_prefix, marc_flavour)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO sources (name, base_url, metadata_prefix, marc_flavour,
+                             request_headers)
+        VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (base_url, metadata_prefix) DO UPDATE
             SET name = EXCLUDED.name,
-                marc_flavour = COALESCE(EXCLUDED.marc_flavour, sources.marc_flavour)
+                marc_flavour = COALESCE(EXCLUDED.marc_flavour, sources.marc_flavour),
+                request_headers = CASE
+                    WHEN EXCLUDED.request_headers = '{}'::jsonb
+                    THEN sources.request_headers
+                    ELSE EXCLUDED.request_headers
+                END
         RETURNING id
         """,
-        (name, base_url, metadata_prefix, flavour.value if flavour else None),
+        (name, base_url, metadata_prefix, flavour.value if flavour else None,
+         Jsonb(request_headers or {})),
     ).fetchone()
     return row[0]
 

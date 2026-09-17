@@ -85,6 +85,43 @@ class TestSource:
         conn.commit()
         assert conn.execute("SELECT count(*) FROM sources").fetchone()[0] == 2
 
+    def test_request_headers_are_stored(self, conn):
+        """An endpoint behind a Host-routing proxy is unreachable without
+        its header, and a scheduled run has no operator to supply one."""
+        ensure_source(conn, "test", "http://koha.test/oai.pl", "marc21",
+                      Flavour.MARC21, {"Host": "unimarc.localhost"})
+        conn.commit()
+        stored = conn.execute(
+            "SELECT request_headers FROM sources").fetchone()[0]
+        assert stored == {"Host": "unimarc.localhost"}
+
+    def test_omitting_headers_does_not_clear_them(self, conn):
+        """Forgetting --header is far more common than deliberately
+        removing one. A run without it must not strip the routing an
+        earlier run established, or the next scheduled harvest times
+        out with nothing to explain why."""
+        ensure_source(conn, "test", "http://koha.test/oai.pl", "marc21",
+                      Flavour.MARC21, {"Host": "unimarc.localhost"})
+        conn.commit()
+        ensure_source(conn, "test", "http://koha.test/oai.pl", "marc21",
+                      Flavour.MARC21)
+        conn.commit()
+        stored = conn.execute(
+            "SELECT request_headers FROM sources").fetchone()[0]
+        assert stored == {"Host": "unimarc.localhost"}
+
+    def test_headers_can_be_replaced(self, conn):
+        """A non-empty dict is an intentional change and does replace."""
+        ensure_source(conn, "test", "http://koha.test/oai.pl", "marc21",
+                      Flavour.MARC21, {"Host": "old.localhost"})
+        conn.commit()
+        ensure_source(conn, "test", "http://koha.test/oai.pl", "marc21",
+                      Flavour.MARC21, {"Host": "new.localhost"})
+        conn.commit()
+        stored = conn.execute(
+            "SELECT request_headers FROM sources").fetchone()[0]
+        assert stored == {"Host": "new.localhost"}
+
 
 class TestInsertAndRoundTrip:
     def test_arrays_and_jsonb_survive(self, conn):

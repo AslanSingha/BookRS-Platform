@@ -79,6 +79,25 @@ MIGRATIONS: tuple[Migration, ...] = (
             "gin_trgm_ops)",
         ),
     ),
+    Migration(
+        version=2,
+        description="sources.request_headers for proxy-routed endpoints",
+        statements=(
+            # An endpoint behind a reverse proxy that routes by Host is
+            # unreachable without that header, and the header was only
+            # ever a command-line argument. A scheduled harvest run by
+            # cron months later has no way to know it is needed: the
+            # request does not fail, it times out, which reads as the
+            # library being down rather than as a missing header.
+            #
+            # Stored per source so the source carries its own routing.
+            # An explicit --header still overrides what is stored, since
+            # the operator in front of the terminal knows more than the
+            # row does.
+            "ALTER TABLE sources ADD COLUMN IF NOT EXISTS "
+            "request_headers JSONB NOT NULL DEFAULT '{}'::jsonb",
+        ),
+    ),
 )
 
 _LEDGER = """

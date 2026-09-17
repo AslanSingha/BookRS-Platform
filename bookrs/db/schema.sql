@@ -44,6 +44,12 @@ CREATE TABLE sources (
     -- Carried forward between runs so a sudden loss of holdings is
     -- treated as a configuration regression (docs section 12.1).
     last_had_items  BOOLEAN,
+    -- Extra request headers this endpoint needs, as {"Name": "value"}.
+    -- An endpoint behind a reverse proxy that routes by Host is
+    -- unreachable without one, and a scheduled run has no other way to
+    -- learn that: the request times out rather than failing, which
+    -- reads as the library being down.
+    request_headers JSONB         NOT NULL DEFAULT '{}'::jsonb,
     UNIQUE (base_url, metadata_prefix)
 );
 
