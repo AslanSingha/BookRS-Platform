@@ -95,6 +95,10 @@ line "    works with factors     ${f:-?}"
 k880=$(koha "SELECT COUNT(*) FROM koha_kohadev.biblio_metadata WHERE ExtractValue(metadata,'//datafield[@tag=\"880\"]') <> '';" 2>/dev/null)
 line "    alternate-script works ${a:-?}"
 line "      880 records in source ${k880:-not probed}   (Koha MARC21 only)"
+# Different editions of one work, with different ISBNs, so ISBN-first
+# resolution cannot merge them. Measured rather than discovered in a demo.
+dup=$(mine "SELECT count(*) FROM (SELECT lower(title) FROM works WHERE source_id=1 AND length(title)>0 GROUP BY 1 HAVING count(*)>1) d")
+line "      duplicate titles       ${dup:-not probed} pairs   (Koha MARC21; different editions, different ISBNs)"
 
 # --------------------------------------------- other live instances
 # Koha UNIMARC and PMB both run locally now (see docs/pmb-setup.md and
