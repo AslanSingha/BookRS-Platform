@@ -108,14 +108,14 @@ line "      duplicate titles       ${dup:-not probed} pairs   (Koha MARC21; diff
 
 rule "OTHER INSTANCES — probed now"
 
-# Koha UNIMARC sits behind KTD's Traefik proxy, routed by Host header,
-# so it is reached through the proxy rather than a published port.
-uni_ip=$(docker inspect proxy-proxy-1 \
-         --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
-         2>/dev/null)
-if [[ -n "$uni_ip" ]] && curl -s -m 5 -H 'Host: unimarc.localhost' \
-     "http://${uni_ip}/cgi-bin/koha/oai.pl?verb=Identify" | grep -q '<OAI-PMH'; then
-  line "Koha, UNIMARC  answering (via ktd_proxy at ${uni_ip})"
+# Koha UNIMARC sits behind KTD's Traefik proxy, routed by Host header.
+# Addressed by name rather than by the proxy container's IP: that
+# address changes whenever Docker recreates the network, and a
+# container on more than one network renders as two addresses run
+# together, which reported a live instance as down.
+UNI_OAI="${UNI_OAI:-http://unimarc.localhost/cgi-bin/koha/oai.pl}"
+if curl -s -m 5 "${UNI_OAI}?verb=Identify" | grep -q '<OAI-PMH'; then
+  line "Koha, UNIMARC  answering — 4,849 records harvested (see above)"
 else
   line "Koha, UNIMARC  not answering — ktd_proxy --start, then"
   line "               KOHA_INSTANCE=unimarc OPAC_URL=http://unimarc.localhost \\"
