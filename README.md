@@ -4,11 +4,14 @@
 > platforms — Koha, PMB, and other MARC / OAI-PMH-compliant systems.
 
 **Status: working, not yet piloted.** Catalogue ingestion, embedding,
-search and the OPAC widget run end to end against live Koha instances in
-both MARC flavours, and against a live PMB instance — a patron viewing a record sees related books from
-the library's own holdings. No library has deployed it yet, so the
-collaborative-filtering half is still unbuilt: it needs circulation data
-that only a real deployment produces.
+search and the OPAC widget run end to end against three live library
+systems — Koha in both MARC flavours and a self-hosted PMB instance
+(`docs/pmb-setup.md`) — and a patron viewing a record sees related books
+from the library's own holdings. Collaborative filtering is built and
+wired in, including per-patron folding-in, but it has only ever run on
+generated circulation: no library has deployed this yet, and nothing
+here demonstrates recommendation *quality*. That needs real borrowing
+history, which only a pilot produces.
 
 ---
 
