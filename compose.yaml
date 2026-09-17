@@ -82,9 +82,12 @@ services:
     environment:
       DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs"
       TEST_DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs_test"
-      # The library's OPAC origin. Empty by default: an unconfigured
-      # deployment refuses cross-origin calls rather than allowing all.
-      BOOKRS_ALLOWED_ORIGINS: "${BOOKRS_ALLOWED_ORIGINS:-http://localhost:8080}"
+      # The library's OPAC origins, comma-separated. A real library has
+      # one; both Koha instances are listed here because this setup runs
+      # MARC21 and UNIMARC on different hostnames and the widget is
+      # installed in both. A missing origin fails in the browser with no
+      # server-side error: the panel simply never appears.
+      BOOKRS_ALLOWED_ORIGINS: "${BOOKRS_ALLOWED_ORIGINS:-http://localhost:8080,http://unimarc.localhost}"
     ports:
       - "8000:8000"
     volumes:

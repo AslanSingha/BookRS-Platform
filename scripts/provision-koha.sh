@@ -203,7 +203,10 @@ SQL
 # block it runs in -- without it an enforcing policy drops the injected
 # script with no visible error.
 if [[ -n "$WIDGET_API" ]]; then
-  say "installing the OPAC widget (WIDGET_API=${WIDGET_API})"
+  # Printed because it is not otherwise visible: WIDGET_SOURCE_ID
+  # defaults to 1, so a second instance provisioned without it serves
+  # the first instance's catalogue under a footer claiming otherwise.
+  say "installing the OPAC widget (WIDGET_API=${WIDGET_API}, source ${WIDGET_SOURCE_ID})"
   dbq "$DB_NAME" <<SQL
 INSERT INTO systempreferences (variable, value, explanation, type)
 VALUES ('OPACUserJS', '(function () {
