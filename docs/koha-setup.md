@@ -140,7 +140,7 @@ The MARC21 sample catalogue, after provisioning:
 |---|---|
 | catalogue records | 436 |
 | physical copies | 961 |
-| patron accounts | 50 |
+| patron accounts | 53 |
 | records with MARC 880 | 1 |
 | duplicate title pairs | 8 |
 

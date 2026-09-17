@@ -188,3 +188,95 @@ config.
 
 A second harvest reports the unchanged records as unchanged, so the
 two-hash change detection works against PMB as it does against Koha.
+
+---
+
+## Circulation: what PMB exposes, and what it does not
+
+BookRS-Platform harvests cataloguing from PMB and circulation from Koha only.
+That asymmetry is PMB's configuration rather than a gap in the integration, and
+this section records how that was established — by reading what the running
+instance publishes, not by assuming PMB behaves like Koha.
+
+### Where the answer lives
+
+PMB ships eight out-connectors under `admin/connecteurs/out/`. Six are
+bibliographic export formats; two are general-purpose APIs:
+
+* `apijsonrpc` — JSON-RPC over `ws/connector_out.php?source_id=N`
+* `apisoap` — SOAP, same endpoint
+
+Neither defines any method itself. Both are transports: the method inventory
+comes from `es_catalog`, which parses `external_services/catalog.xml` and loads
+one service group per registered `<item>`. The connector's configuration form
+then lets an administrator pick which of those methods a given source exports.
+
+Two consequences follow. First, whatever PMB can expose is enumerated in that
+one XML file. Second, exposure is opt-in per function and per source — unlike
+Koha's REST API, which answers under Basic auth once enabled, a PMB
+installation publishes nothing until an administrator selects it.
+
+### What is registered
+
+`external_services/catalog.xml` registers 39 groups. `pmbesEmpr` (id 30) is
+among them, and its manifest publishes full borrower management:
+
+    fetch_empr · create_empr · update_empr · delete_empr · empr_list
+    statut_list · categ_list · codestat_list · groupe_list · abt_list …
+
+So PMB does publish patron data over JSON-RPC, read and write.
+
+### What is not
+
+Three groups are present on disk, complete with manifests, and commented out in
+the catalogue:
+
+```xml
+<!-- <item name="pmbesResas" id="24"/>
+<item name="pmbesLoans" id="25"/>
+<item name="pmbesReaders" id="26"/> -->
+```
+
+`external_services/pmbesLoans/` contains `pmbesLoans.class.php`, localised
+messages and a manifest declaring `listLoansReaders`, `listLoansGroups`,
+`filterLoansReaders` and `exportCSV`. None of it is reachable: `es_catalog`
+never loads the group, so its methods never appear in the connector's
+exported-functions list, so no source can enable them.
+
+The catalogue file carries `$Id: catalog.xml,v 1.21.6.1 2020/04/22`. Whether
+the three groups were deprecated deliberately or left mid-migration is not
+determinable from the shipped files. What is determinable is the effective
+behaviour: **loans, reservations and reader records are not exposed by this
+build of PMB.**
+
+### Why the platform does not request borrower records either
+
+`pmbesEmpr` is available, so patron identities could be harvested. They are
+not, deliberately. A collaborative recommender needs interactions, not
+identities — borrower records without loans produce no signal at all. Fetching
+them would mean holding personal data the system has no use for, which
+contradicts the data-minimisation position the rest of the platform takes
+(circulation from Koha is pseudonymised at ingestion precisely so that
+identities are never stored).
+
+### The resulting claim
+
+> Cataloguing integrates with Koha and PMB. Circulation integrates with Koha
+> only, because PMB ships its loan services disabled at
+> `external_services/catalog.xml` ids 24, 25 and 26. Borrower services are
+> available but not used, since identities without interactions carry no
+> recommendation signal and would be personal data held without purpose.
+
+### What would change this
+
+Two things, neither attempted:
+
+1. **A newer PMB.** This instance is a 2020-era build. If current PMB
+   re-registers those groups, the finding is version-specific rather than
+   permanent. Checking that means reading upstream's `catalog.xml`, not this
+   container.
+2. **Uncommenting them locally.** Technically possible and deliberately not
+   done. Editing a library's ILS to obtain data is the opposite of the
+   read-only, unmodified-infrastructure position the platform is built on, and
+   a result obtained that way would not describe what a real PMB library could
+   offer.
