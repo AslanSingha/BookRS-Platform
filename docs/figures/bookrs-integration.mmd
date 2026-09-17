@@ -1,0 +1,183 @@
+graph TD
+    %% Styling and Classes
+    classDef live fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0c4a6e;
+    classDef remote fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
+    classDef platform fill:#ffffff,stroke:#475569,stroke-width:2px,stroke-dasharray: 4 4,color:#0f172a;
+    classDef core fill:#f1f5f9,stroke:#475569,stroke-width:1.5px,color:#0f172a;
+    classDef db fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#4c1d95;
+    classDef browser fill:#ecfdf5,stroke:#059669,stroke-width:2px,color:#065f46;
+
+    %% Upstream Layer
+    subgraph UPSTREAM["EXTERNAL INTEGRATION TARGETS (Integrated Library Systems)"]
+        subgraph LOCAL_KOHA["Koha Development Environment (Local Docker via KTD)"]
+            KOHA_M21["**Koha MARC21 Instance**
+
+Port :8080 (OPAC) / :8081 (Staff)
+
+
+436 sample records · 961 items
+
+
+Running live on host"]
+            KOHA_UNI["Koha UNIMARC Instance
+
+
+unimarc.localhost (Traefik)
+
+
+4,849 records
+
+
+Exposed unreliable format labels"]
+        end
+
+        subgraph LOCAL_PMB["PMB Environment (Local Docker)"]
+            PMB_INSTANCE["PMB Instance
+
+
+French-origin ILS · UNIMARC-derived XML
+
+
+ws/connector_out.php?source_id=1 (:8090)
+
+
+Shim reverse-engineered · harvested
+end-to-end with change detection"]
+        end
+    end
+    class UPSTREAM platform;
+    class KOHA_M21,KOHA_UNI live;
+    class PMB_INSTANCE remote;
+
+    %% Protocol Boundary
+    OAI_M21["OAI-PMH / OAI-PMH:ConfFile
+
+verb=ListRecords&metadataPrefix=marc21"]
+    REST_M21["REST API (BasicAuth)
+
+
+/api/v1/checkouts"]
+    OAI_UNI["OAI-PMH (UNIMARC)
+
+
+Mislabeled as marc21 namespace"]
+    OAI_PMB["OAI-PMH (PMB XML)
+
+
+prefix=pmb_xml_unimarc
+
+
+Mixed namespaced & bare XML"]
+
+    KOHA_M21 --> OAI_M21
+    KOHA_M21 --> REST_M21
+    KOHA_UNI --> OAI_UNI
+    PMB_INSTANCE --> OAI_PMB
+
+    %% Ingestion Layer
+    subgraph INGESTION["BOOKRS-PLATFORM INGESTION (bookrs/ingestion)"]
+        FLAVOUR["**flavour.py**
+
+Probes 245 vs 200 tags
+
+
+Structural detection"]
+        MAPPER["fieldmap.py & pmb.py
+
+
+MARC21 / UNIMARC / PMB
+
+
+Alternate script 880 resolution"]
+        CIRC["circulation.py
+
+
+HMAC-SHA256 pseudonymisation
+
+
+patron_ref = HMAC-SHA256(borrowernumber,
+deployment_secret)[:32]"]
+    end
+    class INGESTION platform;
+    class FLAVOUR,MAPPER,CIRC core;
+
+    OAI_M21 --> FLAVOUR
+    OAI_UNI --> FLAVOUR
+    OAI_PMB --> MAPPER
+    REST_M21 --> CIRC
+    FLAVOUR --> MAPPER
+
+    %% Storage Layer
+    subgraph STORAGE["PER-DEPLOYMENT STORAGE (PostgreSQL 17)"]
+        T_SOURCES[("**sources**
+
+id · name · base_url · format")]
+        T_WORKS[("works & items
+
+
+source_id · source_record_id
+
+
+title · title_alternate · hashes")]
+        T_LOANS[("loans
+
+
+source_id · patron_ref · checkout_id")]
+        T_EMB[("embeddings
+
+
+384-dim REAL[] · embedder version
+· title-only flag")]
+        T_FACTORS[("work_factors
+
+
+ALS factors · fitted_at")]
+    end
+    class STORAGE platform;
+    class T_SOURCES,T_WORKS,T_LOANS,T_EMB,T_FACTORS db;
+
+    MAPPER -->|Namespaced Work entity| T_WORKS
+    CIRC -->|Pseudonymised checkout| T_LOANS
+    T_SOURCES -.->|FK: source_id| T_WORKS
+    T_SOURCES -.->|FK: source_id| T_LOANS
+
+    %% Model and Query Layers
+    MODELS["embedding · recommend services
+
+
+SBERT encoding · ALS factorisation
+
+
+(collapsed — see architecture diagram)"]
+    API["api service :8000
+
+
+hybrid ranking · widget.js
+
+
+loads no model"]
+    class MODELS,API core;
+
+    T_WORKS -.->|stale works| MODELS
+    T_LOANS -.->|loans| MODELS
+    MODELS --> T_EMB
+    MODELS --> T_FACTORS
+
+    T_WORKS --> API
+    T_EMB --> API
+    T_FACTORS --> API
+
+    %% Output Presentation
+    subgraph PRESENTATION["PUBLIC ACCESS (OPAC)"]
+        OPAC_VIEW["**Koha OPAC Browser Page**
+
+localhost:8080/cgi-bin/koha/opac-detail.pl
+
+
+Injected widget.js via OPACUserJS"]
+    end
+    class PRESENTATION platform;
+    class OPAC_VIEW browser;
+
+    API -->|JSON + widget| OPAC_VIEW
+    KOHA_M21 -.->|Serves base page| OPAC_VIEW

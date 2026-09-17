@@ -1,0 +1,95 @@
+graph TD
+    %% Styling and Classes
+    classDef infra fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px,color:#0f172a;
+    classDef platform fill:#ffffff,stroke:#94a3b8,stroke-dasharray: 4 4,stroke-width:1.5px,color:#334155;
+    classDef service fill:#e2e8f0,stroke:#475569,stroke-width:1.5px,color:#0f172a;
+    classDef database fill:#e2e8f0,stroke:#334155,stroke-width:2px,color:#0f172a;
+    classDef browser fill:#ecfdf5,stroke:#059669,stroke-width:2px,color:#065f46;
+
+    %% Upstream Infrastructure
+    subgraph INFRA["LIBRARY INFRASTRUCTURE (Unmodified · No Direct DB Access)"]
+        KOHA["Koha / PMB
+
+the library's own system"]
+        OAI_EP["OAI-PMH
+
+
+cataloguing
+
+
+Koha and PMB"]
+        REST_EP["REST API
+
+
+circulation
+
+
+Koha only"]
+        KOHA -.-> OAI_EP
+        KOHA -.->|Koha| REST_EP
+    end
+    class INFRA platform;
+    class KOHA,OAI_EP,REST_EP infra;
+
+    %% Platform Services
+    subgraph PLATFORM["BOOKRS-PLATFORM · self-hosted by the library, Docker Compose"]
+
+        INGEST["**ingestion** (219 MB)
+
+harvest · flavour detect · normalise
+
+
+field map · pseudonymise"]
+
+        DB[("**PostgreSQL 17**
+
+sources · works · items
+
+
+embeddings · loans · work_factors")]
+
+        EMBED["**embedding** (1.96 GB)
+
+multilingual SBERT
+
+
+384-dimensional vectors"]
+
+        RECOMMEND["**recommend** (511 MB)
+
+confidence weighting
+
+
+ALS factorisation"]
+
+        API["**api** (361 MB)
+
+search · similarity · health
+
+
+hybrid ranking · widget.js
+
+
+read-only · loads no model"]
+
+        INGEST -->|upsert works & items| DB
+        DB -->|stale works| EMBED
+        EMBED -->|vectors| DB
+        DB -->|loans| RECOMMEND
+        RECOMMEND -->|factors| DB
+        DB -->|read vectors & factors| API
+    end
+    class PLATFORM platform;
+    class INGEST,EMBED,RECOMMEND,API service;
+    class DB database;
+
+    %% Downstream Presentation
+    PATRON["**Patron's browser**
+
+the library's catalogue page"]
+    class PATRON browser;
+
+    %% Cross-Tier Connections
+    OAI_EP -->|read-only| INGEST
+    REST_EP -->|read-only| INGEST
+    API -->|JSON + widget| PATRON

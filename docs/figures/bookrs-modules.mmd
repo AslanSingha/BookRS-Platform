@@ -1,0 +1,162 @@
+graph TD
+    %% Styling and Classes
+    classDef infra fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px,color:#0f172a;
+    classDef boundary fill:#ffffff,stroke:#94a3b8,stroke-dasharray: 4 4,stroke-width:1.5px,color:#334155;
+    classDef service fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#0f172a;
+    classDef module fill:#f8fafc,stroke:#475569,stroke-width:1px,color:#0f172a;
+    classDef db fill:#e2e8f0,stroke:#334155,stroke-width:2px,color:#0f172a;
+    classDef browser fill:#ecfdf5,stroke:#059669,stroke-width:2px,color:#065f46;
+
+    %% Library — unmodified, read-only, never the database
+    subgraph LIBRARY["LIBRARY (Koha / PMB) · unmodified · no direct DB access"]
+        OAI_EP["OAI-PMH -> catalogue
+
+
+Koha and PMB"]
+        REST_EP["REST API -> circulation
+
+
+Koha only"]
+    end
+    class LIBRARY boundary;
+    class OAI_EP,REST_EP infra;
+
+    subgraph PLATFORM["BOOKRS-PLATFORM · Docker Compose"]
+
+        %% Ingestion
+        subgraph INGESTION["INGESTION (on demand / scheduled)"]
+            PREFLIGHT["preflight.py
+verify endpoint"]
+            HARVEST["harvest.py
+OAI loop · resumption tokens"]
+            FLAVOUR["flavour.py
+detect MARC21 vs UNIMARC
+(probes 245 vs 200)"]
+            PMB["pmb.py
+PMB XML -> common representation"]
+            NORMALIZE["normalize.py
+ISBD · ISBN · non-filing"]
+            LANGUAGE["language.py
+008/35-37 with 041 fallback"]
+            FIELDMAP["fieldmap.py
+per-flavour tag maps"]
+            ALTSCRIPT["altscript.py
+880 resolution"]
+            CIRC["circulation.py
+Koha REST checkouts
+patron_ref = HMAC-SHA256(borrowernumber,
+deployment_secret)[:32]"]
+            ORCH["pipeline.py · cli.py
+compose the stages above
+into an end-to-end run"]
+
+            PREFLIGHT --> HARVEST
+            HARVEST --> FLAVOUR
+            HARVEST --> PMB
+            FLAVOUR --> NORMALIZE
+            PMB --> NORMALIZE
+            NORMALIZE --> LANGUAGE
+            LANGUAGE --> FIELDMAP
+            FIELDMAP --> ALTSCRIPT
+        end
+        class INGESTION service;
+        class PREFLIGHT,HARVEST,FLAVOUR,PMB,NORMALIZE,LANGUAGE,FIELDMAP,ALTSCRIPT,CIRC,ORCH module;
+
+        %% Storage
+        subgraph STORAGE["POSTGRESQL 17 (db service)"]
+            T_SOURCES[("sources")]
+            T_WORKS[("works · items")]
+            T_LOANS[("loans
+pseudonymised")]
+            T_EMB[("embeddings")]
+            T_FACTORS[("work_factors")]
+            T_RATINGS[("ratings
+schema-only · unpopulated")]
+        end
+        class STORAGE boundary;
+        class T_SOURCES,T_WORKS,T_LOANS,T_EMB,T_FACTORS,T_RATINGS db;
+
+        ALTSCRIPT -->|upsert works & items| T_WORKS
+        CIRC -->|pseudonymised checkouts| T_LOANS
+
+        %% Embedding
+        subgraph EMBEDDING["EMBEDDING (on demand, after harvest)"]
+            TEXT["text.py
+composes the text representing a work
+subject headings in place of genre"]
+            ENCODER["encoder.py
+multilingual SBERT · 384 dimensions
++0.301 on French vs +0.169 English-only"]
+            EMBPIPE["pipeline.py · cli.py
+stale selection from source hash,
+model name and embedder version"]
+            TEXT --> ENCODER --> EMBPIPE
+        end
+        class EMBEDDING service;
+        class TEXT,ENCODER,EMBPIPE module;
+
+        T_WORKS -->|stale works| TEXT
+        EMBPIPE -->|vectors| T_EMB
+
+        %% Recommend
+        subgraph RECOMMEND["RECOMMEND (periodic batch)"]
+            CONFIDENCE["confidence.py
+loan 1.0 · renewal 2.0
+repeat 4.0 · ceiling 40.0"]
+            ALS["als.py
+implicit-feedback factorisation"]
+            REFIT["refit.py
+refit entry point · records fitted_at"]
+            CONFIDENCE --> ALS
+            REFIT -.->|drives| CONFIDENCE
+        end
+        class RECOMMEND service;
+        class CONFIDENCE,ALS,REFIT module;
+
+        T_LOANS -->|loans| CONFIDENCE
+        ALS -->|factors| T_FACTORS
+
+        %% API
+        subgraph API["API (always running) · read-only · loads no model"]
+            SEARCH["search.py
+trigram exact search"]
+            SIMILAR["similar.py
+vector arithmetic over cached matrix"]
+            RANK["rank.py
+hybrid ranking
+lives in bookrs/recommend/, imported here
+NumPy only — never imports implicit (§20.4)"]
+            HEALTH["health.py
+model freshness"]
+            WIDGET["widget.py
+serves widget.js"]
+            SIMILAR --> RANK
+            SEARCH --> RANK
+        end
+        class API service;
+        class SEARCH,SIMILAR,RANK,HEALTH,WIDGET module;
+
+        T_WORKS -->|read| SEARCH
+        T_EMB -->|read vectors| SIMILAR
+        T_FACTORS -->|read factors| RANK
+        T_SOURCES -.->|FK: source_id| T_WORKS
+        T_SOURCES -.->|FK: source_id| T_LOANS
+    end
+    class PLATFORM boundary;
+
+    %% Cross-tier edges — every library edge is outbound and read-only
+    OAI_EP -->|read-only| HARVEST
+    REST_EP -->|read-only| CIRC
+
+    %% Presentation
+    OPAC["LIBRARY OPAC (browser widget)
+
+
+widget.js injected via OPACUserJS
+
+
+suggestions rendered on catalogue page"]
+    class OPAC browser;
+
+    RANK -->|JSON| OPAC
+    WIDGET -->|widget.js · CORS origin allowed| OPAC
