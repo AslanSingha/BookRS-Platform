@@ -219,8 +219,14 @@ VALUES ('OPACUserJS', '(function () {
 ON DUPLICATE KEY UPDATE value = VALUES(value);
 SQL
 
-  # Koha caches system preferences, so the change is invisible until
-  # Plack reloads.
+  # Koha caches system preferences in memcached, and Plack reads them
+  # back through it on start. Restarting Plack alone leaves the stale
+  # value in place: the preference is correct in the database while
+  # oai.pl still returns 404. Flush first, then restart.
+  say "flushing memcached so the preference is not served stale"
+  docker exec "${INSTANCE}-memcached-1" \
+    sh -c 'echo flush_all | nc -q1 localhost 11211' >/dev/null 2>&1 \
+    || docker restart "${INSTANCE}-memcached-1" >/dev/null 2>&1 || true
   say "restarting Plack so the preference takes effect"
   docker exec "$KOHA_C" koha-plack --restart "$SITE" >/dev/null 2>&1 || true
 fi
