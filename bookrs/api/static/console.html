@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<!--
+  BookRS-Platform operations console.
+
+  Not a patron interface. A library's catalogue keeps its own search and
+  its own display; this service adds a recommendation panel to it and
+  nothing else. This page exists so the person running the service can
+  see what it harvested, what it embedded and what it returns, which
+  otherwise requires a terminal.
+
+  Deliberately plain: no build step, no framework, no dependencies. It
+  is served from the API's own static directory, so upgrading the
+  service upgrades the page.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BookRS-Platform — operations</title>
+<style>
+  :root {
+    --ink: #1a1d21; --muted: #6b7280; --line: #e5e7eb;
+    --bg: #fafafa; --card: #ffffff; --accent: #2f5d8a;
+    --ok: #1a7f37; --warn: #8a6d00;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.5rem 4rem;
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--ink); background: var(--bg);
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; }
+  .sub { color: var(--muted); margin: 0 0 2rem; font-size: .9rem; }
+  h2 {
+    font-size: .78rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); font-weight: 600; margin: 2.2rem 0 .8rem;
+  }
+  .cards { display: grid; gap: .75rem;
+           grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 6px; padding: .85rem 1rem;
+  }
+  .card h3 { margin: 0 0 .5rem; font-size: .95rem; }
+  .card .flavour {
+    font-size: .72rem; color: var(--muted); font-weight: 400;
+    text-transform: uppercase; letter-spacing: .05em;
+  }
+  .row { display: flex; justify-content: space-between; font-size: .87rem;
+         padding: .15rem 0; }
+  .row span:last-child { font-variant-numeric: tabular-nums; }
+  .dim { color: var(--muted); }
+  .totals { display: flex; flex-wrap: wrap; gap: 1.8rem; margin-bottom: .4rem; }
+  .totals div { }
+  .totals .n { font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+  .totals .l { font-size: .78rem; color: var(--muted); }
+  form { display: flex; gap: .5rem; margin: 0 0 1rem; }
+  input[type=search] {
+    flex: 1; padding: .55rem .75rem; font-size: .95rem;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--card);
+  }
+  button {
+    padding: .55rem 1.1rem; font-size: .92rem; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--accent);
+    color: #fff; border-radius: 6px;
+  }
+  button.ghost { background: transparent; color: var(--accent); }
+  ul.results { list-style: none; margin: 0; padding: 0;
+               display: grid; gap: .5rem; }
+  li.result {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 6px; padding: .7rem .9rem; cursor: pointer;
+  }
+  li.result:hover { border-color: var(--accent); }
+  .title { font-weight: 600; }
+  .meta { font-size: .84rem; color: var(--muted); margin-top: .15rem; }
+  .tag {
+    display: inline-block; font-size: .72rem; padding: .05rem .45rem;
+    border: 1px solid var(--line); border-radius: 3px; margin-left: .4rem;
+    color: var(--muted); vertical-align: 1px;
+  }
+  .signal { font-size: .76rem; }
+  .signal.hybrid { color: var(--ok); }
+  .signal.content { color: var(--muted); }
+  .note { font-size: .84rem; color: var(--muted); margin: .6rem 0 0; }
+  .empty { color: var(--muted); font-size: .9rem; padding: .6rem 0; }
+  .banner {
+    background: #fff8e1; border: 1px solid #f0e0a0; border-radius: 6px;
+    padding: .7rem .9rem; font-size: .85rem; margin-bottom: 1.6rem;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>BookRS-Platform</h1>
+  <p class="sub">Operations view. Patrons never see this page.</p>
+
+  <div class="banner">
+    This is not a catalogue. A library's own OPAC keeps its search and its
+    display; this service adds a recommendation panel to it. What is shown
+    here spans every configured source, which a patron's view never does.
+  </div>
+
+  <h2>State</h2>
+  <div class="totals" id="totals"><span class="dim">loading…</span></div>
+  <p class="note" id="freshness"></p>
+
+  <h2>Sources</h2>
+  <div class="cards" id="sources"></div>
+
+  <h2>Search</h2>
+  <form id="searchForm">
+    <input type="search" id="q" placeholder="ISBN, title or author — exact match"
+           autocomplete="off" minlength="2">
+    <button type="submit">Search</button>
+  </form>
+  <ul class="results" id="results"></ul>
+  <p class="note" id="searchNote"></p>
+
+  <div id="recPanel" hidden>
+    <h2>Recommendations <span id="recFor" class="dim"></span></h2>
+    <p class="note" id="recSummary"></p>
+    <ul class="results" id="recs"></ul>
+  </div>
+
+</div>
+
+<script>
+"use strict";
+
+var API = "";   /* same origin */
+
+function el(tag, cls, text) {
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+function get(path) {
+  return fetch(API + path).then(function (r) {
+    if (!r.ok) throw new Error(r.status + " " + path);
+    return r.json();
+  });
+}
+
+function fmt(n) { return (n === null || n === undefined) ? "—" : n.toLocaleString(); }
+
+function ago(iso) {
+  if (!iso) return "never";
+  var secs = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (secs < 90) return "just now";
+  if (secs < 5400) return Math.round(secs / 60) + " minutes ago";
+  if (secs < 172800) return Math.round(secs / 3600) + " hours ago";
+  return Math.round(secs / 86400) + " days ago";
+}
+
+/* ---- state ---- */
+
+function loadHealth() {
+  return get("/health").then(function (h) {
+    var t = document.getElementById("totals");
+    t.innerHTML = "";
+    [["works", h.works], ["items", h.items],
+     ["embedded", h.embeddings], ["with factors", h.factorised_works]
+    ].forEach(function (pair) {
+      var d = el("div");
+      d.appendChild(el("div", "n", fmt(pair[1])));
+      d.appendChild(el("div", "l", pair[0]));
+      t.appendChild(d);
+    });
+
+    var bits = [];
+    bits.push("Last harvest " + ago(h.last_harvest) + ".");
+    bits.push("Models refitted " + ago(h.last_factorised) + ".");
+    if (h.unembedded) {
+      bits.push(h.unembedded + " work" + (h.unembedded === 1 ? "" : "s") +
+                " not embedded — a record with no title has nothing to encode " +
+                "and is skipped rather than failed.");
+    }
+    document.getElementById("freshness").textContent = bits.join(" ");
+  });
+}
+
+/* ---- sources ---- */
+
+function loadSources() {
+  return get("/sources").then(function (d) {
+    var host = document.getElementById("sources");
+    host.innerHTML = "";
+    d.sources.forEach(function (s) {
+      var c = el("div", "card");
+      var h = el("h3", null, s.name);
+      if (s.flavour) h.appendChild(el("span", "flavour", "  " + s.flavour));
+      c.appendChild(h);
+      [["works", s.works], ["embedded", s.embedded],
+       ["with factors", s.factorised]].forEach(function (p) {
+        var r = el("div", "row");
+        r.appendChild(el("span", "dim", p[0]));
+        r.appendChild(el("span", null, fmt(p[1])));
+        c.appendChild(r);
+      });
+      var r = el("div", "row");
+      r.appendChild(el("span", "dim", "harvested"));
+      r.appendChild(el("span", null, ago(s.last_harvest)));
+      c.appendChild(r);
+      host.appendChild(c);
+    });
+  });
+}
+
+/* ---- search ---- */
+
+function resultItem(w, onClick) {
+  var li = el("li", "result");
+  var t = el("div", "title", w.title || "Untitled");
+  if (w.source && w.source.name) {
+    t.appendChild(el("span", "tag", w.source.name));
+  }
+  li.appendChild(t);
+
+  var meta = [];
+  if (w.authors && w.authors.length) meta.push(w.authors.join(", "));
+  if (w.publication_year) meta.push(w.publication_year);
+  if (w.languages && w.languages.length) meta.push(w.languages.join(", "));
+  if (w.availability) {
+    meta.push(w.availability.total === 0
+      ? "no copies"
+      : w.availability.available + " of " + w.availability.total + " available");
+  }
+  li.appendChild(el("div", "meta", meta.join(" · ")));
+
+  if (w.signal) {
+    var s = el("div", "signal " + (w.signal === "content" ? "content" : "hybrid"),
+      w.signal === "content"
+        ? "content similarity " + (w.content_score || 0).toFixed(3)
+        : "hybrid — content " + (w.content_score || 0).toFixed(3) +
+          ", collaborative " + (w.collaborative_score || 0).toFixed(3));
+    li.appendChild(s);
+  }
+
+  if (onClick) li.addEventListener("click", function () { onClick(w); });
+  return li;
+}
+
+function search(q) {
+  var list = document.getElementById("results");
+  var note = document.getElementById("searchNote");
+  list.innerHTML = "";
+  note.textContent = "searching…";
+
+  get("/search/exact?q=" + encodeURIComponent(q) + "&limit=20")
+    .then(function (d) {
+      note.textContent = d.count === 0
+        ? "Nothing matched. This is exact matching on ISBN, title or author — " +
+          "not semantic search."
+        : d.count + " result" + (d.count === 1 ? "" : "s") +
+          ". Select one to see what the recommender returns for it.";
+      d.results.forEach(function (w) {
+        list.appendChild(resultItem(w, showRecommendations));
+      });
+    })
+    .catch(function (e) { note.textContent = "Search failed: " + e.message; });
+}
+
+/* ---- recommendations ---- */
+
+function showRecommendations(work) {
+  var panel = document.getElementById("recPanel");
+  var recs = document.getElementById("recs");
+  var summary = document.getElementById("recSummary");
+  panel.hidden = false;
+  recs.innerHTML = "";
+  document.getElementById("recFor").textContent = "for “" + (work.title || "") + "”";
+  summary.textContent = "loading…";
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  get("/works/" + work.id + "/similar?limit=8")
+    .then(function (d) {
+      var parts = [];
+      parts.push(d.count + " result" + (d.count === 1 ? "" : "s") +
+                 ", scoped to " + (work.source ? work.source.name : "this source") + ".");
+      if (d.collaborative_applied) {
+        parts.push(d.hybrid_count + " carry circulation evidence of their own.");
+      } else {
+        parts.push("No collaborative signal: factorisation reaches only works " +
+                   "with enough co-borrowing, and the content order stands " +
+                   "unchanged for the rest.");
+      }
+      summary.textContent = parts.join(" ");
+      d.results.forEach(function (w) { recs.appendChild(resultItem(w, null)); });
+    })
+    .catch(function (e) { summary.textContent = "Failed: " + e.message; });
+}
+
+/* ---- boot ---- */
+
+document.getElementById("searchForm").addEventListener("submit", function (ev) {
+  ev.preventDefault();
+  var q = document.getElementById("q").value.trim();
+  if (q.length >= 2) search(q);
+});
+
+Promise.all([loadHealth(), loadSources()]).catch(function (e) {
+  document.getElementById("totals").textContent = "Could not reach the API: " + e.message;
+});
+</script>
+</body>
+</html>

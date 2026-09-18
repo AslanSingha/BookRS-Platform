@@ -102,6 +102,7 @@ def _summary(work: queries.WorkSummary) -> dict:
         "languages": work.languages,
         "subjects": work.subjects,
         "isbns": work.isbns,
+        "source": {"id": work.source_id, "name": work.source_name},
         **({"availability": {
             "total": work.copies_total,
             "available": work.copies_available,
@@ -109,6 +110,34 @@ def _summary(work: queries.WorkSummary) -> dict:
         }} if work.has_holdings else {}),
         **({"score": round(work.score, 4)} if work.score is not None else {}),
     }
+
+
+@app.get("/sources")
+def sources() -> dict:
+    """Per-source harvest and coverage figures.
+
+    /health reports totals, which on a deployment harvesting one library
+    is the same thing. Where several sources share a database it is not,
+    and a librarian asking whether their catalogue harvested wants their
+    own row rather than the sum.
+    """
+    with pool.connection() as conn:
+        return {"sources": queries.source_breakdown(conn)}
+
+
+@app.get("/console", include_in_schema=False)
+def console() -> FileResponse:
+    """An operations view of this service.
+
+    Not a patron interface and deliberately not linked from one: a
+    library's catalogue keeps its own search and its own display, and
+    this service adds a recommendation panel to it and nothing else.
+    This page exists so that the person running the service can see
+    what it harvested, what it embedded and what it returns, which
+    otherwise requires a terminal.
+    """
+    return FileResponse(os.path.join(_STATIC, "console.html"),
+                        media_type="text/html")
 
 
 @app.get("/widget.js", include_in_schema=False)

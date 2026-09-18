@@ -65,6 +65,8 @@ class WorkSummary:
     isbns: list[str] = field(default_factory=list)
     copies_total: int = 0
     has_holdings: bool = True
+    source_id: int = 0
+    source_name: str = ""
     copies_available: int = 0
     score: float | None = None
 
@@ -106,13 +108,15 @@ _SELECT = """
            -- must not mean "no holdings": that would silently drop the
            -- availability line from a catalogue that has items. Items
            -- present settle it regardless of what the flag says.
-           (coalesce(s.last_had_items, true) OR count(i.id) > 0) AS has_holdings
+           (coalesce(s.last_had_items, true) OR count(i.id) > 0) AS has_holdings,
+           s.id                                                AS source_id,
+           s.name                                              AS source_name
     FROM works w
     LEFT JOIN items i ON i.work_id = w.id
     JOIN sources s ON s.id = w.source_id
 """
 
-_GROUP = " GROUP BY w.id, s.last_had_items "
+_GROUP = " GROUP BY w.id, s.last_had_items, s.id, s.name "
 
 
 def _row_to_summary(row, score: float | None = None) -> WorkSummary:
@@ -122,7 +126,8 @@ def _row_to_summary(row, score: float | None = None) -> WorkSummary:
         publication_year=row[5], languages=[l.strip() for l in (row[6] or [])],
         subjects=row[7] or [], isbns=row[8] or [],
         copies_total=row[9], copies_available=row[10],
-        has_holdings=row[11], score=score,
+        has_holdings=row[11], source_id=row[12], source_name=row[13],
+        score=score,
     )
 
 
@@ -254,6 +259,33 @@ def search_exact(conn: psycopg.Connection, query: str, limit: int = 20,
          "threshold": WORD_SIMILARITY_THRESHOLD},
     ).fetchall()
     return [_row_to_summary(r) for r in rows]
+
+
+def source_breakdown(conn: psycopg.Connection) -> list[dict]:
+    """Per-source counts. A librarian cares whether their own catalogue
+    harvested and embedded, not the total across every configured
+    library -- which on a single-library deployment are the same number
+    and on this development setup are not."""
+    rows = conn.execute(
+        """
+        SELECT s.id, s.name, s.marc_flavour, s.last_harvest,
+               count(DISTINCT w.id)                              AS works,
+               count(DISTINCT e.work_id)                         AS embedded,
+               count(DISTINCT f.work_id)                         AS factorised
+        FROM sources s
+        LEFT JOIN works w      ON w.source_id = s.id AND w.deleted_at IS NULL
+        LEFT JOIN embeddings e ON e.work_id = w.id
+        LEFT JOIN work_factors f ON f.work_id = w.id
+        GROUP BY s.id, s.name, s.marc_flavour, s.last_harvest
+        ORDER BY s.id
+        """
+    ).fetchall()
+    return [
+        {"id": r[0], "name": r[1], "flavour": r[2],
+         "last_harvest": r[3].isoformat() if r[3] else None,
+         "works": r[4], "embedded": r[5], "factorised": r[6]}
+        for r in rows
+    ]
 
 
 class _VectorCache:
