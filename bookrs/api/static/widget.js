@@ -61,6 +61,10 @@
   var NORESULTS_SEL = script.getAttribute("data-noresults") || "#numresults";
   var RESULTS_SEL = script.getAttribute("data-results") || "#userresults";
   var MIN_SCORE = parseFloat(script.getAttribute("data-min-score") || "0.55");
+  /* Some catalogues search by POST, so the query is not in the URL at
+   * all -- PMB is one. They do re-fill the search box with the term, so
+   * the page still carries it; this selector says where to read it. */
+  var QUERY_INPUT = script.getAttribute("data-query-input") || "";
   var HEADING_RESCUE = script.getAttribute("data-heading-rescue") || "Closest by meaning";
   var HEADING_RELATED = script.getAttribute("data-heading-related") || "Also related by subject";
   var HEADING_CONTENT = "Related in this catalogue";
@@ -202,11 +206,19 @@
            .replace(/\s+/g, " ").trim();
       if (v) { out.push(v); }
     }
+    if (!out.length && QUERY_INPUT) {
+      var field = document.querySelector(QUERY_INPUT);
+      if (field && field.value) { out.push(field.value.trim()); }
+    }
     return out.join(" ");
   }
 
   function isSearchPage() {
-    return window.location.pathname.indexOf(SEARCH_PATH) !== -1;
+    if (window.location.pathname.indexOf(SEARCH_PATH) === -1) { return false; }
+    /* A POST-search catalogue serves its results page from the same
+     * path as its home page, so the path alone is not enough: require
+     * the query itself, wherever this deployment carries it. */
+    return !!searchQuery();
   }
 
   function hadNoResults() {
