@@ -17,6 +17,9 @@
 (function () {
   "use strict";
 
+  if (window.__bookrsLoaded) { return; }
+  window.__bookrsLoaded = true;
+
   var script = document.currentScript;
   if (!script) { return; }
 
