@@ -178,6 +178,12 @@ def health() -> dict:
 
 @app.get("/works/{work_id}")
 def get_work(work_id: int) -> dict:
+    """One work by its internal id.
+
+    The id is the platform's own, assigned at ingestion. A caller
+    holding the library's own identifier wants /works/by-record-id
+    instead.
+    """
     with pool.connection() as conn:
         work = queries.get_work(conn, work_id)
     if work is None:
@@ -202,6 +208,21 @@ def similar(
                     "wrong detail-page URL.",
     ),
 ) -> dict:
+    """Works related to this one, by content and where possible by
+    circulation.
+
+    Every result carries the signal that produced it. "content" means
+    the semantic embedding alone; a hybrid result has been re-ordered
+    by co-borrowing. collaborative_applied reports whether the blend ran
+    at all, which on most catalogues it does not: factorisation reaches
+    only the works with enough co-borrowing to be comparable, and the
+    content order stands unchanged for the rest.
+
+    Results are scoped to the querying work's own source. A deployment
+    harvests one library, so this changes nothing there; where several
+    sources share a database it prevents another library's books
+    appearing under a panel that claims otherwise.
+    """
     with pool.connection() as conn:
         if queries.get_work(conn, work_id) is None:
             raise HTTPException(status_code=404, detail="No such work")
