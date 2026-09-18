@@ -88,11 +88,13 @@ services:
       # installed in both. A missing origin fails in the browser with no
       # server-side error: the panel simply never appears.
       BOOKRS_ALLOWED_ORIGINS: "${BOOKRS_ALLOWED_ORIGINS:-http://localhost:8080,http://unimarc.localhost,http://localhost:8090}"
+      BOOKRS_ONNX_DIR: "/models/minilm-onnx/${BOOKRS_ONNX_VARIANT:-int8}"
     ports:
       - "8000:8000"
     volumes:
       - ./bookrs:/app/bookrs:ro
       - ./tests:/app/tests:ro
+      - ./models/minilm-onnx:/models/minilm-onnx:ro
 
   recommend:
     build:

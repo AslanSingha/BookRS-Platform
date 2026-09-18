@@ -38,3 +38,7 @@ page_*.xml
 # an outstanding correction to a supervisor, and this repository is public.
 report/
 BookRS-Platform_Technical_Report.docx
+.venv-export/
+models/minilm-onnx/fp32/
+data/
+models/minilm-onnx/int8/

@@ -324,3 +324,128 @@ def search_exact(
         results = queries.search_exact(conn, q, limit=limit)
     return {"query": q, "count": len(results),
             "results": [_summary(w) for w in results]}
+
+
+# --------------------------------------------------------------------
+# Semantic search (Stage 0 of the integration work).
+#
+# The query encoder is an ONNX Runtime export of the same model the
+# embedding service uses, so a query vector lives in the same space as
+# the stored work vectors. It is loaded lazily on the first request and
+# kept in process: roughly a second to load, tens of milliseconds per
+# query on CPU, and no PyTorch in this image.
+# --------------------------------------------------------------------
+import threading
+
+import numpy as np
+
+from bookrs.api.encoder_onnx import OnnxEncoder
+
+_encoder: OnnxEncoder | None = None
+_encoder_lock = threading.Lock()
+
+
+def _get_encoder() -> OnnxEncoder:
+    global _encoder
+    if _encoder is None:
+        with _encoder_lock:
+            if _encoder is None:
+                _encoder = OnnxEncoder()
+                log.info("query encoder loaded from %s", _encoder.model_dir)
+    return _encoder
+
+
+class _QueryVectors:
+    """Catalogue vectors held in process, reloaded when embeddings change.
+
+    The reload key is (count, max(created_at)) on the embeddings table:
+    cheap to check on every request and it changes on every embedding
+    run, which is the only time the matrix can go stale.
+    """
+
+    def __init__(self) -> None:
+        self._key = None
+        self._lock = threading.Lock()
+        self.ids = np.zeros(0, dtype=np.int64)
+        self.matrix = np.zeros((0, 384), dtype=np.float32)
+        self.title_only = np.zeros(0, dtype=bool)
+        self.source_ids = np.zeros(0, dtype=np.int64)
+
+    def get(self, conn: psycopg.Connection) -> "_QueryVectors":
+        key = conn.execute(
+            "SELECT count(*), max(created_at) FROM embeddings"
+        ).fetchone()
+        if key != self._key:
+            with self._lock:
+                if key != self._key:
+                    rows = conn.execute(
+                        "SELECT e.work_id, e.vector, e.is_title_only, w.source_id "
+                        "FROM embeddings e JOIN works w ON w.id = e.work_id "
+                        "WHERE w.deleted_at IS NULL ORDER BY e.work_id"
+                    ).fetchall()
+                    self.ids = np.array([r[0] for r in rows], dtype=np.int64)
+                    self.matrix = (np.array([r[1] for r in rows], dtype=np.float32)
+                                   if rows else np.zeros((0, 384), dtype=np.float32))
+                    self.title_only = np.array([r[2] for r in rows], dtype=bool)
+                    self.source_ids = np.array([r[3] for r in rows], dtype=np.int64)
+                    self._key = key
+                    log.info("query vectors loaded: %d works", len(rows))
+        return self
+
+
+_query_vectors = _QueryVectors()
+
+
+@app.get("/search/semantic")
+def search_semantic(
+    q: str = Query(..., min_length=2, max_length=300),
+    limit: int = Query(20, ge=1, le=100),
+    source_id: int | None = Query(
+        None, description="Restrict to one harvested catalogue."),
+    exclude_title_only: bool = Query(
+        False, description="Skip works whose embedding came from a title alone."),
+    min_score: float = Query(
+        0.0, ge=-1.0, le=1.0,
+        description="Drop results below this cosine similarity."),
+) -> dict:
+    """Works whose content matches the meaning of a free-text query.
+
+    Distinct from /search/exact: that one answers "this ISBN, this
+    title"; this one answers "books about this". Scores are cosine
+    similarity between the query vector and each work's stored vector.
+    """
+    qv = _get_encoder().encode([q])[0]
+    with pool.connection() as conn:
+        v = _query_vectors.get(conn)
+        n = v.matrix.shape[0]
+        if n == 0:
+            return {"query": q, "count": 0, "results": []}
+
+        scores = v.matrix @ qv
+        mask = np.ones(n, dtype=bool)
+        if source_id is not None:
+            mask &= v.source_ids == source_id
+        if exclude_title_only:
+            mask &= ~v.title_only
+        scores = np.where(mask, scores, -np.inf)
+
+        k = min(limit, int(mask.sum()))
+        if k == 0:
+            return {"query": q, "count": 0, "results": []}
+        top = np.argpartition(-scores, k - 1)[:k]
+        top = top[np.argsort(-scores[top])]
+        top = [int(i) for i in top if scores[i] >= min_score]
+
+        ids = [int(v.ids[i]) for i in top]
+        score_by_id = {int(v.ids[i]): float(scores[i]) for i in top}
+        rows = conn.execute(
+            queries._SELECT + " WHERE w.id = ANY(%s) AND w.deleted_at IS NULL"
+            + queries._GROUP,
+            (ids,),
+        ).fetchall()
+
+    found = {row[0]: queries._row_to_summary(row, score=score_by_id[row[0]])
+             for row in rows}
+    ordered = [found[i] for i in ids if i in found]
+    return {"query": q, "count": len(ordered),
+            "results": [_summary(w) for w in ordered]}
