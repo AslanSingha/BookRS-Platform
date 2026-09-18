@@ -117,14 +117,34 @@ def _upsert_work(conn: psycopg.Connection, source_id: int, work: Work
             deleted_at = NULL
         RETURNING id, (xmax = 0) AS was_insert
         """,
-        (source_id, work.source_record_id, work.title, work.title_alternate,
-         work.publisher,
+        (source_id, _clip(work.source_record_id, 255), work.title, work.title_alternate,
+         _clip(work.publisher, 255),
          work.publication_year, work.summary, work.contents, work.authors,
-         work.subjects, work.isbns, work.languages,
+         work.subjects, [i for i in (work.isbns or []) if len(i) <= 13],
+         _clip_each(work.languages, 3),
          psycopg.types.json.Jsonb(work.provenance),
-         work.marc_005, work.content_hash, work.items_hash),
+         _clip(work.marc_005, 20), work.content_hash, work.items_hash),
     ).fetchone()
     return row[0], "inserted" if row[1] else "updated", True
+
+
+
+def _clip(value, limit: int):
+    """Truncate a string to a column's varchar limit.
+
+    A field that overruns its column is a fact about the source record,
+    not a reason to abort a 50,000-record harvest and roll it back. The
+    columns concerned (publisher, branches, call numbers) are display
+    fields, so losing a tail is harmless; the full text is still in the
+    provenance JSON for anyone who needs it.
+    """
+    if value is None:
+        return None
+    return value if len(value) <= limit else value[:limit]
+
+
+def _clip_each(values, limit: int):
+    return [v[:limit] for v in (values or []) if v is not None]
 
 
 def load_works(conn: psycopg.Connection, source_id: int,
@@ -162,9 +182,10 @@ def load_works(conn: psycopg.Connection, source_id: int,
                                        item_type, due_date, issue_count)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (work_id, item.barcode, item.owning_branch,
-                     item.holding_branch, item.location, item.call_number,
-                     item.item_type, item.due_date, item.issue_count),
+                    (work_id, _clip(item.barcode, 64), _clip(item.owning_branch, 32),
+                     _clip(item.holding_branch, 32), _clip(item.location, 120),
+                     _clip(item.call_number, 120), _clip(item.item_type, 32),
+                     item.due_date, item.issue_count),
                 )
                 stats.items += 1
 
