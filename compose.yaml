@@ -87,7 +87,7 @@ services:
       # MARC21 and UNIMARC on different hostnames and the widget is
       # installed in both. A missing origin fails in the browser with no
       # server-side error: the panel simply never appears.
-      BOOKRS_ALLOWED_ORIGINS: "${BOOKRS_ALLOWED_ORIGINS:-http://localhost:8080,http://unimarc.localhost}"
+      BOOKRS_ALLOWED_ORIGINS: "${BOOKRS_ALLOWED_ORIGINS:-http://localhost:8080,http://unimarc.localhost,http://localhost:8090}"
     ports:
       - "8000:8000"
     volumes:
