@@ -59,6 +59,7 @@
   var RESULTS_SEL = script.getAttribute("data-results") || "#userresults";
   var MIN_SCORE = parseFloat(script.getAttribute("data-min-score") || "0.55");
   var HEADING_RESCUE = script.getAttribute("data-heading-rescue") || "Closest by meaning";
+  var HEADING_RELATED = script.getAttribute("data-heading-related") || "Also related by subject";
   var HEADING_CONTENT = "Related in this catalogue";
   var HEADING_BORROWED = "Readers also borrowed";
   if (!API) { return; }
@@ -240,14 +241,55 @@
     }
   }
 
+  /* Record ids the catalogue's own search already put on the page, so
+   * the related band only ever adds and never repeats. */
+  function shownRecordIds() {
+    var ids = {};
+    var re = new RegExp("[?&]" + RECORD_PARAM + "=(\\d+)");
+    var links = document.querySelectorAll(RESULTS_SEL + " a[href*='" + RECORD_PARAM + "=']");
+    for (var i = 0; i < links.length; i++) {
+      var m = links[i].getAttribute("href").match(re);
+      if (m) { ids[m[1]] = true; }
+    }
+    return ids;
+  }
+
+  function renderRelated(results) {
+    if (!results.length) { return; }
+    var panel = element("div", "bookrs-panel bookrs-related");
+    panel.appendChild(element("h3", "bookrs-heading", HEADING_RELATED));
+    var list = element("ul", "bookrs-list");
+    results.forEach(function (work) { list.appendChild(card(work)); });
+    panel.appendChild(list);
+    panel.appendChild(element("p", "bookrs-credit", "Suggestions from this library's own catalogue"));
+    var anchor = document.querySelector(RESULTS_SEL);
+    if (anchor && anchor.parentNode) {
+      anchor.parentNode.insertBefore(panel, anchor.nextSibling);
+    } else {
+      ((MOUNT && document.querySelector(MOUNT)) || document.querySelector("#main, main") || document.body)
+        .appendChild(panel);
+    }
+  }
+
   function rescue() {
     var query = searchQuery();
-    if (!query || query.length < 3 || !hadNoResults()) { return; }
+    if (!query || query.length < 3) { return; }
+    var empty = hadNoResults();
+    /* Stricter when the catalogue already answered: the band is an
+     * addition to a working result list, not a rescue of a failed one. */
+    var threshold = empty ? minScore() : Math.min(minScore() + 0.05, 0.95);
+    var want = empty ? LIMIT : LIMIT * 3;
     var path = "/search/semantic?q=" + encodeURIComponent(query)
-             + "&limit=" + LIMIT + "&min_score=" + minScore();
+             + "&limit=" + want + "&min_score=" + threshold;
     if (SOURCE_ID) { path += "&source_id=" + encodeURIComponent(SOURCE_ID); }
     request(path)
-      .then(function (data) { style(); renderRescue(query, data.results || []); })
+      .then(function (data) {
+        var results = data.results || [];
+        style();
+        if (empty) { renderRescue(query, results); return; }
+        var shown = shownRecordIds();
+        renderRelated(results.filter(function (w) { return !shown[w.biblionumber]; }).slice(0, LIMIT));
+      })
       .catch(function () { /* silent, as everywhere else */ });
   }
 
