@@ -280,7 +280,7 @@
     var empty = hadNoResults();
     /* Stricter when the catalogue already answered: the band is an
      * addition to a working result list, not a rescue of a failed one. */
-    var threshold = empty ? minScore() : Math.min(minScore() + 0.05, 0.95);
+    var threshold = empty ? minScore() : Math.min(Math.round((minScore() + 0.05) * 100) / 100, 0.95);
     var want = empty ? LIMIT : LIMIT * 3;
     var path = "/search/semantic?q=" + encodeURIComponent(query)
              + "&limit=" + want + "&min_score=" + threshold;

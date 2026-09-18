@@ -23,7 +23,7 @@
           <ol>
             <li><label for="api_url">BookRS API URL: </label>
                 <input type="url" id="api_url" name="api_url" size="60" value="[% api_url | html %]" required/>
-                <span class="hint">The address patrons' browsers can reach, e.g. https://bookrs.yourlibrary.org. It must list this OPAC's origin in BOOKRS_ALLOWED_ORIGINS.</span></li>
+                <span class="hint">The address patrons' browsers can reach, e.g. https://bookrs.yourlibrary.org. It must list this OPAC's origin in BOOKRS_ALLOWED_ORIGINS. If this Koha enforces a Content-Security-Policy, add this URL to its connect-src, or proxy the API under the OPAC's own hostname.</span></li>
             <li><label for="source_id">Source id: </label>
                 <input type="text" id="source_id" name="source_id" size="6" value="[% source_id | html %]"/>
                 <span class="hint">Which harvested catalogue this OPAC is (see /sources on the API). Leave blank for a single-library deployment.</span></li>
