@@ -194,12 +194,20 @@ def similar(
         description="Skip works whose embedding came from a title alone. "
                     "About a third of a typical catalogue.",
     ),
+    cross_source: bool = Query(
+        False,
+        description="Search every harvested catalogue rather than only the "
+                    "one this work came from. Off by default: a deployment "
+                    "harvests one library, and a result from another has the "
+                    "wrong detail-page URL.",
+    ),
 ) -> dict:
     with pool.connection() as conn:
         if queries.get_work(conn, work_id) is None:
             raise HTTPException(status_code=404, detail="No such work")
         results = queries.similar_works(conn, work_id, limit=limit,
-                                        exclude_title_only=exclude_title_only)
+                                        exclude_title_only=exclude_title_only,
+                                        cross_source=cross_source)
     return {
         "work_id": work_id,
         "count": len(results),

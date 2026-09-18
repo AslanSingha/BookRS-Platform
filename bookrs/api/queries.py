@@ -258,6 +258,7 @@ class _VectorCache:
         self._ids: list[int] = []
         self._matrix: np.ndarray | None = None
         self._title_only: np.ndarray = np.zeros(0, dtype=bool)
+        self._sources: np.ndarray = np.zeros(0, dtype=np.int32)
 
     def get(self, conn: psycopg.Connection) -> tuple[list[int], np.ndarray]:
         probe = conn.execute(
@@ -267,7 +268,7 @@ class _VectorCache:
             if probe != self._probe or self._matrix is None:
                 rows = conn.execute(
                     """
-                    SELECT e.work_id, e.vector, e.is_title_only
+                    SELECT e.work_id, e.vector, e.is_title_only, w.source_id
                     FROM embeddings e JOIN works w ON w.id = e.work_id
                     WHERE w.deleted_at IS NULL
                     ORDER BY e.work_id
@@ -275,6 +276,7 @@ class _VectorCache:
                 ).fetchall()
                 self._ids = [r[0] for r in rows]
                 self._title_only = np.array([r[2] for r in rows], dtype=bool)
+                self._sources = np.array([r[3] for r in rows], dtype=np.int32)
                 self._matrix = np.asarray([r[1] for r in rows], dtype=np.float32)
                 self._probe = probe
             return self._ids, self._matrix
@@ -282,6 +284,10 @@ class _VectorCache:
     @property
     def title_only_mask(self) -> np.ndarray:
         return self._title_only
+
+    @property
+    def source_ids(self) -> np.ndarray:
+        return self._sources
 
 
 VECTORS = _VectorCache()
@@ -332,6 +338,7 @@ FACTORS = _FactorCache()
 
 def similar_works(conn: psycopg.Connection, work_id: int, limit: int = 10,
                   exclude_title_only: bool = False,
+                  cross_source: bool = False,
                   weights: RankWeights | None = None) -> list[WorkSummary]:
     """Works related to this one, by content and where possible by circulation.
 
@@ -351,10 +358,12 @@ def similar_works(conn: psycopg.Connection, work_id: int, limit: int = 10,
     """
     weights = weights or RANK_WEIGHTS
     probe = conn.execute(
-        "SELECT vector FROM embeddings WHERE work_id = %s", (work_id,)
+        "SELECT e.vector, w.source_id FROM embeddings e "
+        "JOIN works w ON w.id = e.work_id WHERE e.work_id = %s", (work_id,)
     ).fetchone()
     if probe is None:
         return []
+    query_source = probe[1]
 
     ids, matrix = VECTORS.get(conn)
     if matrix is None or not len(ids):
@@ -367,6 +376,14 @@ def similar_works(conn: psycopg.Connection, work_id: int, limit: int = 10,
     # than the limit: with fewer, argpartition returns every index
     # including the ones scored -1, and the excluded works reappear.
     keep = np.array([wid != work_id for wid in ids])
+    # Scoped to the querying work's own catalogue. A deployment harvests
+    # one library, so this changes nothing there -- but where several
+    # sources share a database, an unscoped search returns another
+    # library's books under a panel that says "from this library's own
+    # catalogue", and links them with the wrong system's URL pattern.
+    # Opt out with cross_source for a deliberately federated view.
+    if not cross_source:
+        keep &= (VECTORS.source_ids == query_source)
     if exclude_title_only:
         keep &= ~VECTORS.title_only_mask
     if not keep.any():

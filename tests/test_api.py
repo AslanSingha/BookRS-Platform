@@ -146,6 +146,38 @@ class TestSimilarWorks:
         scores = [w.score for w in similar_works(conn, 1)]
         assert scores == sorted(scores, reverse=True)
 
+    def _second_source(self, conn):
+        """A second harvested library sharing the database."""
+        conn.execute("INSERT INTO sources (name, base_url, metadata_prefix) "
+                     "VALUES ('t2','http://y/oai.pl','marc21')")
+        row = conn.execute(
+            "INSERT INTO works (source_id, source_record_id, title, "
+            "content_hash) VALUES (2,'R:99','Perl best practices','h99') "
+            "RETURNING id").fetchone()
+        conn.commit()
+        return row[0]
+
+    def test_neighbours_come_from_the_querying_work_s_own_source(self, conn):
+        """An unscoped search returns another library's books under a
+        panel reading "from this library's own catalogue", and links
+        them with the wrong system's URL pattern. One deployment
+        harvests one library, so this is invisible there and appears
+        only where several sources share a database."""
+        other = self._second_source(conn)
+        self._embed(conn, 1, seed=7)
+        self._embed(conn, other, seed=7)   # identical vector: would rank first
+        ids = [w.id for w in similar_works(conn, 1)]
+        assert other not in ids
+
+    def test_cross_source_is_available_on_request(self, conn):
+        """The scoping is a default, not a prohibition. Without this a
+        filter hardcoded into the query would pass every other test."""
+        other = self._second_source(conn)
+        self._embed(conn, 1, seed=7)
+        self._embed(conn, other, seed=7)
+        ids = [w.id for w in similar_works(conn, 1, cross_source=True)]
+        assert other in ids
+
 
 class TestGetWork:
     def test_returns_the_work(self, conn):
