@@ -429,7 +429,9 @@ def search_semantic(
             mask &= ~v.title_only
         scores = np.where(mask, scores, -np.inf)
 
-        k = min(limit, int(mask.sum()))
+        # Over-fetch: editions of one work score near-identically and
+        # would otherwise fill the list with copies of the same book.
+        k = min(limit * 4, int(mask.sum()))
         if k == 0:
             return {"query": q, "count": 0, "results": []}
         top = np.argpartition(-scores, k - 1)[:k]
@@ -446,6 +448,37 @@ def search_semantic(
 
     found = {row[0]: queries._row_to_summary(row, score=score_by_id[row[0]])
              for row in rows}
-    ordered = [found[i] for i in ids if i in found]
+    ordered = _collapse_editions([found[i] for i in ids if i in found])[:limit]
     return {"query": q, "count": len(ordered),
             "results": [_summary(w) for w in ordered]}
+
+
+_ARTICLES = ("the ", "a ", "an ", "le ", "la ", "les ", "l'", "un ", "une ", "des ")
+
+
+def _canonical_key(work) -> tuple[str, str]:
+    """Title + first author, normalised the way the thesis entity
+    resolution does it: lowercase, punctuation out, articles off."""
+    import re as _re
+    t = _re.sub(r"[^\w\s]", " ", (work.title or "").lower())
+    t = _re.sub(r"\s+", " ", t).strip()
+    for art in _ARTICLES:
+        if t.startswith(art):
+            t = t[len(art):]
+            break
+    a = (work.authors[0] if work.authors else "").lower()
+    a = _re.sub(r"[^\w\s]", " ", a)
+    a = _re.sub(r"\s+", " ", a).strip()
+    return t, a
+
+
+def _collapse_editions(works):
+    """Keep the best-scoring edition of each work; input is score-ordered."""
+    seen, out = set(), []
+    for w in works:
+        key = _canonical_key(w)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(w)
+    return out

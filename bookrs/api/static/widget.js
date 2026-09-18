@@ -227,6 +227,11 @@
     panel.appendChild(list);
     panel.appendChild(element("p", "bookrs-credit", "Suggestions from this library's own catalogue"));
     var anchor = document.querySelector(NORESULTS_SEL);
+    /* After Koha's own "No results found for that in catalog." line,
+     * when it is the next element; the heading alone otherwise. */
+    if (anchor && anchor.nextElementSibling && anchor.nextElementSibling.tagName === "P") {
+      anchor = anchor.nextElementSibling;
+    }
     if (anchor && anchor.parentNode) {
       anchor.parentNode.insertBefore(panel, anchor.nextSibling);
     } else {
