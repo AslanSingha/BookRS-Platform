@@ -280,3 +280,125 @@ Two things, neither attempted:
    read-only, unmodified-infrastructure position the platform is built on, and
    a result obtained that way would not describe what a real PMB library could
    offer.
+
+---
+
+## Installing the OPAC widget
+
+Koha publishes a system preference, `OPACUserJS`, whose entire purpose is
+injecting a library's own JavaScript into every OPAC page. PMB has no
+equivalent, and the reasonable first conclusion is that reaching PMB's patron
+interface means editing its templates — which the read-only,
+unmodified-infrastructure position of this project forbids.
+
+It doesn't. PMB has a parameter that does the same job, and finding it took
+enough probing to be worth recording.
+
+### What works
+
+`biblio_main_header`, in PMB's `parametres` table under `type_param='opac'`,
+section `b_aff_general`. It holds HTML, it renders on record detail pages as
+well as the main page, and a `<script>` tag placed inside it executes.
+
+It is set through PMB's own administrative interface — Administration,
+Parameters, OPAC — so installing the widget is configuration in exactly the
+sense it is on Koha. No PMB file is modified.
+
+The value shipped by default is `<h3>Des services pour PMB</h3>`, which renders
+as a caption over the header images. Anything added is appended to that, so a
+real library keeps whatever they already have there and adds the snippet after
+it:
+
+```html
+<h3>Des services pour PMB</h3>
+<script src="http://bookrs.library.example/widget.js"
+        data-api="http://bookrs.library.example"
+        data-source-id="10"
+        data-record-param="id"
+        data-record-prefix="oai:PMBTEST:"
+        data-record-url="/pmb/opac_css/index.php?lvl=notice_display&id={id}"
+        data-mount="#main_hors_footer"
+        data-limit="6"></script>
+```
+
+Four of those attributes exist because PMB differs from Koha, and each defaults
+to Koha's value so an existing Koha installation is untouched:
+
+| Attribute | Koha default | PMB |
+|---|---|---|
+| `data-record-param` | `biblionumber` | `id` |
+| `data-record-prefix` | *(empty)* | the installation's OAI identifier prefix |
+| `data-record-url` | `/cgi-bin/koha/opac-detail.pl?biblionumber={id}` | `/pmb/opac_css/index.php?lvl=notice_display&id={id}` |
+| `data-mount` | *(theme fallback chain)* | `#main_hors_footer` |
+
+`data-record-prefix` is not a constant. `oai:PMBTEST:` is what this development
+instance emits; a real installation sets its own OAI archive identifier, and
+the prefix must match what `works.source_record_id` actually holds. Check it:
+
+```sql
+SELECT source_record_id FROM works WHERE source_id = <n> LIMIT 1;
+```
+
+`#main_hors_footer` — "main without footer" — is the container holding the page
+content but excluding the footer. Mounting on `#main` instead puts the panel
+below "Mentions légales", which is where it first appeared.
+
+### What does not work, and why it looks like it should
+
+`script_analytics` is the obvious candidate. Its description reads *"Code
+Javascript d'analyse d'audience (Par exemple pour Google Analytics, XiTi,..)"*,
+which is precisely the right shape: a free-text JavaScript field applied to
+OPAC pages.
+
+Setting it produces nothing in the rendered page. The reason is in
+`opac_css/includes/javascript/script_analytics.js`: the value is wrapped in a
+cookie-consent mechanism, injected only after a visitor consents, via an
+element with id `script_analytics`.
+
+Two reasons not to pursue it even if the consent path were enabled.
+Recommendations are not audience analytics, and putting them behind a tracking
+consent prompt misrepresents what they are. And a mechanism that depends on
+visitor consent means the panel appears for some patrons and not others, which
+is worse than not having it.
+
+### Other requirements
+
+**CORS.** The platform's `BOOKRS_ALLOWED_ORIGINS` must include PMB's origin.
+A missing origin fails entirely in the browser with no server-side trace: the
+API answers normally and the browser discards the response, so the panel simply
+never appears.
+
+**Source id.** `data-source-id` must be PMB's source, not another library's.
+The widget looks the record up by `source_record_id` scoped to that source, and
+`/works/{id}/similar` returns neighbours from the querying work's own catalogue
+— so a wrong source id produces a panel of another library's books under a
+footer reading "from this library's own catalogue".
+
+**No availability line.** PMB's OAI export carries no item fields, so the
+platform holds no holdings data for PMB records and the widget renders no
+status line for them. That is deliberate: reporting "No copies" would assert
+something PMB never published. Koha records, whose export does carry items,
+still show availability.
+
+### Verifying
+
+```bash
+# the snippet is in the page
+curl -s 'http://localhost:8090/pmb/opac_css/index.php?lvl=notice_display&id=1' \
+  | grep -o 'widget.js'
+
+# the API permits PMB's origin
+curl -s -H 'Origin: http://localhost:8090' -D- -o /dev/null \
+  'http://localhost:8000/works/<pmb-work-id>/similar?limit=6' \
+  | grep -i access-control
+```
+
+Both passing and the panel still absent means the browser blocked or errored on
+something else; the console will say. The widget fails silently by design — a
+panel that does not appear is a disappointment, a JavaScript error on a
+library's catalogue page is a support ticket.
+
+One thing to disable when demonstrating: browser translation. Chrome offers to
+translate a French OPAC into English, which turns *Bac en poche* into *High
+school diploma in hand* and makes it look as though the platform is translating
+records. It isn't.
