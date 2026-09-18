@@ -64,6 +64,7 @@ class WorkSummary:
     subjects: list[str] = field(default_factory=list)
     isbns: list[str] = field(default_factory=list)
     copies_total: int = 0
+    has_holdings: bool = True
     copies_available: int = 0
     score: float | None = None
 
@@ -92,12 +93,21 @@ _SELECT = """
            w.title, w.authors, w.publisher, w.publication_year,
            w.languages, w.subjects, w.isbns,
            count(i.id)                                        AS copies_total,
-           count(i.id) FILTER (WHERE i.due_date IS NULL)       AS copies_available
+           count(i.id) FILTER (WHERE i.due_date IS NULL)       AS copies_available,
+           -- Whether this source publishes holdings at all. Zero copies
+           -- from a source that does is a real catalogue-only record --
+           -- on-order, electronic, reference. Zero copies from a source
+           -- that does not is an absence of data, and reporting it as
+           -- "No copies" states something the export never said. PMB's
+           -- OAI carries no item fields, so every PMB record is the
+           -- second case.
+           coalesce(s.last_had_items, false)                   AS has_holdings
     FROM works w
     LEFT JOIN items i ON i.work_id = w.id
+    JOIN sources s ON s.id = w.source_id
 """
 
-_GROUP = " GROUP BY w.id "
+_GROUP = " GROUP BY w.id, s.last_had_items "
 
 
 def _row_to_summary(row, score: float | None = None) -> WorkSummary:
@@ -106,7 +116,8 @@ def _row_to_summary(row, score: float | None = None) -> WorkSummary:
         authors=row[3] or [], publisher=row[4] or "",
         publication_year=row[5], languages=[l.strip() for l in (row[6] or [])],
         subjects=row[7] or [], isbns=row[8] or [],
-        copies_total=row[9], copies_available=row[10], score=score,
+        copies_total=row[9], copies_available=row[10],
+        has_holdings=row[11], score=score,
     )
 
 

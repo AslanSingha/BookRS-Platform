@@ -33,6 +33,21 @@
    * An explicit data-heading always wins: a library that has chosen its
    * own wording knows its own catalogue. */
   var HEADING = script.getAttribute("data-heading");
+  /* Three things differ between library systems, and nothing else does.
+   * Defaults are Koha's, so an existing installation is unaffected.
+   *
+   * PMB, whose OPAC takes the same snippet through its biblio_main_header
+   * parameter rather than Koha's OPACUserJS:
+   *   data-record-param="id"
+   *   data-record-prefix="oai:PMBTEST:"
+   *   data-record-url="/pmb/opac_css/index.php?lvl=notice_display&id={id}"
+   *   data-mount="#main"
+   * The prefix is the installation's OAI identifier, not a constant. */
+  var RECORD_PARAM = script.getAttribute("data-record-param") || "biblionumber";
+  var RECORD_PREFIX = script.getAttribute("data-record-prefix") || "";
+  var RECORD_URL = script.getAttribute("data-record-url")
+                || "/cgi-bin/koha/opac-detail.pl?biblionumber={id}";
+  var MOUNT = script.getAttribute("data-mount");
   var HEADING_CONTENT = "Related in this catalogue";
   var HEADING_BORROWED = "Readers also borrowed";
   if (!API) { return; }
@@ -40,7 +55,8 @@
   /* Koha detail pages carry the record id in the query string. Other
    * pages have no biblionumber, so the widget simply does nothing. */
   function biblionumber() {
-    var match = window.location.search.match(/[?&]biblionumber=(\d+)/);
+    var re = new RegExp("[?&]" + RECORD_PARAM + "=(\\d+)");
+    var match = window.location.search.match(re);
     return match ? match[1] : null;
   }
 
@@ -62,7 +78,7 @@
     var item = element("li", "bookrs-item");
 
     var link = element("a", "bookrs-title", work.title || "Untitled");
-    link.href = "/cgi-bin/koha/opac-detail.pl?biblionumber=" + work.biblionumber;
+    link.href = RECORD_URL.replace("{id}", encodeURIComponent(work.biblionumber));
     item.appendChild(link);
 
     if (work.authors && work.authors.length) {
@@ -78,17 +94,23 @@
     /* Availability comes from the last catalogue sync, not a live
      * check, so it is described as "on the shelf" rather than promised
      * as current. */
-    var availability = work.availability || {};
-    var status = element(
-      "span",
-      "bookrs-status " + (availability.is_available ? "in" : "out"),
-      availability.total === 0
-        ? "No copies"
-        : availability.is_available
-          ? availability.available + " of " + availability.total + " on the shelf"
-          : "All copies on loan"
-    );
-    item.appendChild(status);
+    /* Absent, not zero. A source whose export carries no item fields --
+     * PMB's OAI is one -- says nothing about holdings, and rendering
+     * that as "No copies" asserts something the library never
+     * published. Zero copies from a source that does publish holdings
+     * is a real catalogue-only record and still shown. */
+    if (work.availability) {
+      var availability = work.availability;
+      item.appendChild(element(
+        "span",
+        "bookrs-status " + (availability.is_available ? "in" : "out"),
+        availability.total === 0
+          ? "No copies"
+          : availability.is_available
+            ? availability.available + " of " + availability.total + " on the shelf"
+            : "All copies on loan"
+      ));
+    }
     return item;
   }
 
@@ -123,7 +145,8 @@
     /* Several insertion points, because OPAC themes differ and a
      * library may have customised theirs. The last is the page body,
      * which always exists. */
-    var host = document.getElementById("bookrs-recommendations")
+    var host = (MOUNT && document.querySelector(MOUNT))
+            || document.getElementById("bookrs-recommendations")
             || document.querySelector(".content_set, #catalogue_detail_biblio, .maincontent")
             || document.querySelector("#main, main")
             || document.body;
@@ -154,7 +177,7 @@
     var id = biblionumber();
     if (!id) { return; }
 
-    var query = "/works/by-record-id/" + encodeURIComponent(id);
+    var query = "/works/by-record-id/" + encodeURIComponent(RECORD_PREFIX + id);
     if (SOURCE_ID) { query += "?source_id=" + encodeURIComponent(SOURCE_ID); }
 
     request(query)

@@ -102,11 +102,11 @@ def _summary(work: queries.WorkSummary) -> dict:
         "languages": work.languages,
         "subjects": work.subjects,
         "isbns": work.isbns,
-        "availability": {
+        **({"availability": {
             "total": work.copies_total,
             "available": work.copies_available,
             "is_available": work.is_available,
-        },
+        }} if work.has_holdings else {}),
         **({"score": round(work.score, 4)} if work.score is not None else {}),
     }
 
