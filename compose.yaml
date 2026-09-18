@@ -37,6 +37,12 @@ services:
       # Operator-supplied. Never derived from the repository's own
       # advertised baseURL, which Koha reports incorrectly.
       DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs"
+      # Circulation harvest (python -m bookrs.ingestion.circulation). The
+      # secret keys the patron HMAC; set it once per deployment and keep it.
+      KOHA_REST_URL: "${KOHA_REST_URL:-http://host.docker.internal:8080}"
+      KOHA_REST_USER: "${KOHA_REST_USER:-}"
+      KOHA_REST_PASSWORD: "${KOHA_REST_PASSWORD:-}"
+      BOOKRS_PATRON_SECRET: "${BOOKRS_PATRON_SECRET:-}"
       # Separate database: the loader tests truncate every table.
       TEST_DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs_test"
       OAI_BASE_URL: "${OAI_BASE_URL:-http://host.docker.internal:8080/cgi-bin/koha/oai.pl}"

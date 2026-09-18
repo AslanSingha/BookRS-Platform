@@ -236,3 +236,58 @@ def harvest_loans(cfg: CirculationConfig,
                     f"Exceeded max_pages ({cfg.max_pages}); the endpoint may "
                     f"not be advancing."
                 )
+
+
+# --------------------------------------------------------------------
+# Command-line entry point: python -m bookrs.ingestion.circulation
+#
+# The fourth operational stage alongside harvest, embed and refit.
+# Credentials come from the environment, never from arguments, so they
+# do not appear in shell history or process listings.
+# --------------------------------------------------------------------
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    import logging
+    import os
+
+    import psycopg
+
+    from bookrs.db.loans import load_loans
+
+    ap = argparse.ArgumentParser(
+        prog="bookrs.ingestion.circulation",
+        description="Harvest circulation from Koha's REST API into the loans table.")
+    ap.add_argument("--source-id", type=int, required=True,
+                    help="The harvested source whose records these loans belong to.")
+    ap.add_argument("--url", default=os.environ.get("KOHA_REST_URL", ""),
+                    help="Koha base URL (staff or OPAC host that serves /api/v1). "
+                         "Default: KOHA_REST_URL.")
+    ap.add_argument("--no-history", action="store_true",
+                    help="Current checkouts only (default includes returned loans).")
+    ap.add_argument("--verbose", "-v", action="store_true")
+    a = ap.parse_args(argv)
+    logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
+                        format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
+
+    cfg = CirculationConfig(
+        base_url=a.url, username=os.environ.get("KOHA_REST_USER", ""),
+        password=os.environ.get("KOHA_REST_PASSWORD", ""),
+        patron_secret=os.environ.get("BOOKRS_PATRON_SECRET", ""),
+        include_history=not a.no_history,
+    )
+    if not (cfg.base_url and cfg.username and cfg.password):
+        ap.error("KOHA_REST_URL, KOHA_REST_USER and KOHA_REST_PASSWORD must be set")
+
+    stats = CirculationStats()
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        result = load_loans(conn, a.source_id, harvest_loans(cfg, stats))
+        conn.commit()
+    log.info("harvested %d loans (%d current, %d historical); inserted %d, updated %d, "
+             "unresolved %d, works with loans %d",
+             stats.loans, stats.current, stats.historical,
+             result.inserted, result.updated, result.unresolved, result.resolved_works)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
