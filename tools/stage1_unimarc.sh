@@ -30,11 +30,12 @@ python tools/ol_to_unimarc.py --item-tag "$ITEM_TAG" \
   --sub-callno "$(get items.itemcallnumber)"
 
 say "raising OAI page size to 250"
-docker exec "$KOHA" bash -lc "koha-shell kohadev -c \"perl -MC4::Context -e 'C4::Context->set_preference(q{OAI-PMH:MaxCount}, 250)'\""
+docker exec "$KOHA" bash -lc "printf '%s\\n' 'use Modern::Perl; use C4::Context; C4::Context->set_preference(q{OAI-PMH:MaxCount}, 250); print qq{MaxCount=250\\n};' > /tmp/maxcount.pl && koha-shell kohadev -c 'perl /tmp/maxcount.pl'"
 
 say "importing into Koha"
-docker cp "$MRC" "$KOHA:/tmp/slice-unimarc.mrc"
-docker exec "$KOHA" bash -lc "koha-shell kohadev -c 'cd /kohadevbox/koha && perl misc/migration_tools/bulkmarcimport.pl -b -v -m ISO2709 -file /tmp/slice-unimarc.mrc --commit 1000'" \
+docker cp "$MRC" "$KOHA:/var/lib/koha/kohadev/slice-unimarc.mrc"
+docker exec "$KOHA" bash -lc "chown kohadev-koha:kohadev-koha /var/lib/koha/kohadev/slice-unimarc.mrc && koha-shell kohadev -c 'ls -l /var/lib/koha/kohadev/slice-unimarc.mrc'"
+docker exec "$KOHA" bash -lc "koha-shell kohadev -c 'cd /kohadevbox/koha && perl misc/migration_tools/bulkmarcimport.pl -b -v -m ISO2709 -file /var/lib/koha/kohadev/slice-unimarc.mrc --commit 1000'" \
   2>&1 | tail -12
 
 say "rebuilding Zebra"
