@@ -48,6 +48,17 @@
   var RECORD_URL = script.getAttribute("data-record-url")
                 || "/cgi-bin/koha/opac-detail.pl?biblionumber={id}";
   var MOUNT = script.getAttribute("data-mount");
+  /* Zero-result rescue on the search results page. A query the
+   * catalogue's own search cannot match -- natural language, a typo,
+   * a concept rather than a title -- is answered by meaning instead of
+   * left at "No results found". Never shown when the catalogue did
+   * find something: that page belongs to the library's own ranking. */
+  var SEARCH_PATH = script.getAttribute("data-search-path") || "opac-search.pl";
+  var SEARCH_PARAM = script.getAttribute("data-search-param") || "q";
+  var NORESULTS_SEL = script.getAttribute("data-noresults") || "#numresults";
+  var RESULTS_SEL = script.getAttribute("data-results") || "#userresults";
+  var MIN_SCORE = parseFloat(script.getAttribute("data-min-score") || "0.55");
+  var HEADING_RESCUE = script.getAttribute("data-heading-rescue") || "Closest by meaning";
   var HEADING_CONTENT = "Related in this catalogue";
   var HEADING_BORROWED = "Readers also borrowed";
   if (!API) { return; }
@@ -168,12 +179,75 @@
       ".bookrs-status{font-size:.8em}",
       ".bookrs-status.in{color:#1a7f37}",
       ".bookrs-status.out{color:#8a6d00}",
-      ".bookrs-credit{margin:.8em 0 0;font-size:.78em;color:#777}"
+      ".bookrs-credit{margin:.8em 0 0;font-size:.78em;color:#777}",
+      ".bookrs-note{margin:0 0 .75em;font-size:.9em;color:#444}"
     ].join("");
     document.head.appendChild(css);
   }
 
+  /* Every value of the search parameter, joined; Koha's advanced search
+   * repeats q. CCL index prefixes ("kw,wrdl:") and quotes are stripped
+   * because they are instructions to Zebra, not meaning. */
+  function searchQuery() {
+    var out = [];
+    var re = new RegExp("[?&]" + SEARCH_PARAM + "=([^&]*)", "g");
+    var m;
+    while ((m = re.exec(window.location.search)) !== null) {
+      var v = decodeURIComponent(m[1].replace(/\+/g, " "));
+      v = v.replace(/\b[a-z-]+(,[a-z-]+)*[:=]/gi, " ").replace(/["']/g, " ")
+           .replace(/\s+/g, " ").trim();
+      if (v) { out.push(v); }
+    }
+    return out.join(" ");
+  }
+
+  function isSearchPage() {
+    return window.location.pathname.indexOf(SEARCH_PATH) !== -1;
+  }
+
+  function hadNoResults() {
+    if (!document.querySelector(RESULTS_SEL)) { return true; }
+    var h = document.querySelector(NORESULTS_SEL);
+    return !!(h && /no results/i.test(h.textContent));
+  }
+
+  function minScore() {
+    var m = window.location.search.match(/[?&]bookrs_min=([0-9.]+)/);
+    return m ? parseFloat(m[1]) : MIN_SCORE;
+  }
+
+  function renderRescue(query, results) {
+    if (!results.length) { return; }
+    var panel = element("div", "bookrs-panel bookrs-rescue");
+    panel.appendChild(element("h3", "bookrs-heading", HEADING_RESCUE));
+    panel.appendChild(element("p", "bookrs-note",
+      "Nothing matched \u201c" + query + "\u201d exactly. These are the closest by subject:"));
+    var list = element("ul", "bookrs-list");
+    results.forEach(function (work) { list.appendChild(card(work)); });
+    panel.appendChild(list);
+    panel.appendChild(element("p", "bookrs-credit", "Suggestions from this library's own catalogue"));
+    var anchor = document.querySelector(NORESULTS_SEL);
+    if (anchor && anchor.parentNode) {
+      anchor.parentNode.insertBefore(panel, anchor.nextSibling);
+    } else {
+      ((MOUNT && document.querySelector(MOUNT)) || document.querySelector("#main, main") || document.body)
+        .appendChild(panel);
+    }
+  }
+
+  function rescue() {
+    var query = searchQuery();
+    if (!query || query.length < 3 || !hadNoResults()) { return; }
+    var path = "/search/semantic?q=" + encodeURIComponent(query)
+             + "&limit=" + LIMIT + "&min_score=" + minScore();
+    if (SOURCE_ID) { path += "&source_id=" + encodeURIComponent(SOURCE_ID); }
+    request(path)
+      .then(function (data) { style(); renderRescue(query, data.results || []); })
+      .catch(function () { /* silent, as everywhere else */ });
+  }
+
   function start() {
+    if (isSearchPage()) { rescue(); return; }
     var id = biblionumber();
     if (!id) { return; }
 
