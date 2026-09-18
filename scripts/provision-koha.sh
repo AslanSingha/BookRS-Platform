@@ -72,6 +72,9 @@ ARCHIVE_ID="${OAI_ARCHIVE_ID:-KOHA-OAI-TEST}"
 # WIDGET_API to the empty string to skip installing it.
 WIDGET_API="${WIDGET_API-http://localhost:8000}"
 WIDGET_LIMIT="${WIDGET_LIMIT:-6}"
+# Minimum cosine similarity for the zero-result band. 0.55 is right for
+# a real catalogue; a small demo instance may want it lower.
+WIDGET_MIN_SCORE="${WIDGET_MIN_SCORE:-0.55}"
 WIDGET_SOURCE_ID="${WIDGET_SOURCE_ID:-1}"
 
 # A warm recreate reaches ready in about a minute. A first boot after a
@@ -215,6 +218,7 @@ VALUES ('OPACUserJS', '(function () {
   s.setAttribute("data-api", "${WIDGET_API}");
   s.setAttribute("data-source-id", "${WIDGET_SOURCE_ID}");
   s.setAttribute("data-limit", "${WIDGET_LIMIT}");
+  s.setAttribute("data-min-score", "${WIDGET_MIN_SCORE}");
   var c = document.currentScript;
   if (c && c.nonce) { s.nonce = c.nonce; }
   document.body.appendChild(s);
