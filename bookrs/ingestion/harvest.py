@@ -20,6 +20,7 @@ Three constraints worth knowing before reading the code:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -31,6 +32,33 @@ OAI_NS = "http://www.openarchives.org/OAI/2.0/"
 MARCXML_NS = "http://www.loc.gov/MARC21/slim"
 
 log = logging.getLogger(__name__)
+
+
+
+# Characters XML 1.0 forbids outright, and the ISO 2022 escape sequences
+# that carry them in practice.
+#
+# A catalogue converted from MARC-8 keeps its character-set switches:
+# ESC ( Q ... ESC ( B around a curly apostrophe, for instance. Koha's
+# importer passes them through, the ILS stores them, and its OAI server
+# emits them raw inside XML -- where ESC (0x1B) is not a legal character
+# at any encoding. One apostrophe in one record then makes a page of a
+# hundred records unparseable, and with it the whole harvest.
+#
+# Stripping them is the conservative reading: the escape sequence is an
+# instruction to a MARC-8 reader, not content, and what remains is the
+# text a patron would see. The count is logged rather than passed over
+# in silence -- a library seeing it has legacy encoding to clean up,
+# and that is worth knowing.
+_ISO2022_ESCAPE = re.compile(rb"\x1b(?:\$?[()*+][A-Za-z0-9!\"#$%&'-]|[@-_])")
+_XML_ILLEGAL = re.compile(rb"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _sanitise_xml(payload: bytes) -> tuple[bytes, int]:
+    """Remove bytes no XML parser will accept. Returns (bytes, removed)."""
+    cleaned, n = _ISO2022_ESCAPE.subn(b"", payload)
+    cleaned, m = _XML_ILLEGAL.subn(b"", cleaned)
+    return cleaned, n + m
 
 
 class HarvestError(Exception):
@@ -119,7 +147,18 @@ def _get(client: httpx.Client, url: str, params: dict[str, str], cfg: HarvestCon
             )
 
         try:
-            root = ET.fromstring(response.content)
+            try:
+                root = ET.fromstring(response.content)
+            except ET.ParseError:
+                # Retry once on sanitised bytes before giving up.
+                cleaned, removed = _sanitise_xml(response.content)
+                if not removed:
+                    raise
+                root = ET.fromstring(cleaned)
+                log.warning(
+                    "removed %d character(s) this endpoint emitted that XML "
+                    "forbids (legacy MARC-8 escape sequences, most likely); "
+                    "the affected records are harvested without them", removed)
         except ET.ParseError as exc:
             from bookrs.ingestion.flavour import _diagnose_non_xml
             raise HarvestError(
