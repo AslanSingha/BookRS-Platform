@@ -101,7 +101,12 @@ _SELECT = """
            -- "No copies" states something the export never said. PMB's
            -- OAI carries no item fields, so every PMB record is the
            -- second case.
-           coalesce(s.last_had_items, false)                   AS has_holdings
+           -- NULL until a source's first harvest completes, and NULL
+           -- for anything harvested before this column existed. Unknown
+           -- must not mean "no holdings": that would silently drop the
+           -- availability line from a catalogue that has items. Items
+           -- present settle it regardless of what the flag says.
+           (coalesce(s.last_had_items, true) OR count(i.id) > 0) AS has_holdings
     FROM works w
     LEFT JOIN items i ON i.work_id = w.id
     JOIN sources s ON s.id = w.source_id

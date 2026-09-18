@@ -106,6 +106,23 @@ class TestAvailability:
         resources, catalogue-only records."""
         work = search_exact(conn, "Kernighan")[0]
         assert work.copies_total == 0 and not work.is_available
+        assert work.has_holdings, (
+            "the fixture source publishes holdings, so zero copies here "
+            "is a real catalogue-only record rather than missing data")
+
+    def test_source_that_publishes_no_holdings(self, conn):
+        """PMB's OAI export carries no item fields at all. Zero copies
+        from such a source is an absence of data, not a statement that
+        the library holds none, and the API omits availability entirely
+        rather than letting the widget report 'No copies'."""
+        conn.execute("INSERT INTO sources (name, base_url, metadata_prefix, "
+                     "last_had_items) VALUES ('nohold','http://z/oai','pmb',false)")
+        conn.execute("INSERT INTO works (source_id, source_record_id, title, "
+                     "content_hash) VALUES (2,'R:77','Bac en poche','h77')")
+        conn.commit()
+        work = search_exact(conn, "Bac en poche")[0]
+        assert work.copies_total == 0
+        assert not work.has_holdings
 
 
 class TestSimilarWorks:
