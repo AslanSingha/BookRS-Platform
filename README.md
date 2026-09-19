@@ -179,7 +179,8 @@ was built from the catalogue's own subject headings — independent of the
 recommender by construction — in the three ways it fails: a question in
 ordinary words, a topic phrase no title carries, and a transposed-letter
 typo. 120 queries, 40 of each, run through Koha's own Zebra search and
-through `/search/semantic` at the deployed 0.55 floor
+through `/search/semantic` at a 0.55 floor (per-deployment
+configuration; 0.55 is the default)
 (`tools/build_query_set.py`, `tools/evaluate.py`).
 
 | Query class | Queries | Zebra found nothing | BookRS answered |
@@ -194,8 +195,9 @@ Two things that number does not say:
 - **Typos are the weak class, and that is expected.** A transposed
   letter damages the embedding too; semantic search is not a spell
   checker. The two techniques are complements — fuzzy matching for
-  misspellings, embeddings for meaning — which is what the trigram path
-  in `/search/exact` is for.
+  misspellings, embeddings for meaning — and the trigram indexes that
+  `/search/exact` already uses are where a fallback for this class
+  would go. It is not wired to the rescue path today.
 - **A score floor does not protect against a meaningless query.**
   `trsut` returns three short foreign-language titles at 0.91, 0.80 and
   0.77: high scores, useless results. The floor separates weak matches
