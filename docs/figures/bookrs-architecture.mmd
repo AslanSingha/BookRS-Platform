@@ -4,6 +4,7 @@ graph TD
     classDef platform fill:#ffffff,stroke:#94a3b8,stroke-dasharray: 4 4,stroke-width:1.5px,color:#334155;
     classDef service fill:#e2e8f0,stroke:#475569,stroke-width:1.5px,color:#0f172a;
     classDef database fill:#e2e8f0,stroke:#334155,stroke-width:2px,color:#0f172a;
+    classDef module fill:#f8fafc,stroke:#475569,stroke-width:1px,color:#0f172a;
     classDef browser fill:#ecfdf5,stroke:#059669,stroke-width:2px,color:#065f46;
 
     %% Upstream Infrastructure
@@ -62,15 +63,15 @@ confidence weighting
 
 ALS factorisation"]
 
-        API["**api** (361 MB)
+        API["**api** (516 MB)
 
-search · similarity · health
-
-
-hybrid ranking · widget.js
+exact search · semantic search · similarity
 
 
-read-only · loads no model"]
+hybrid ranking · widget.js · health
+
+
+ONNX int8 query encoder, no PyTorch"]
 
         INGEST -->|upsert works & items| DB
         DB -->|stale works| EMBED
@@ -78,9 +79,19 @@ read-only · loads no model"]
         DB -->|loans| RECOMMEND
         RECOMMEND -->|factors| DB
         DB -->|read vectors & factors| API
+        ENC["query encoder (ONNX Runtime)
+
+
+same model as the embedding service,
+verified by tools/parity_test.py
+
+
+lazy-loaded, ~1s once, tens of ms per query"]
+        ENC -.->|query vector, same space| API
     end
     class PLATFORM platform;
     class INGEST,EMBED,RECOMMEND,API service;
+    class ENC module;
     class DB database;
 
     %% Downstream Presentation
@@ -92,4 +103,4 @@ the library's catalogue page"]
     %% Cross-Tier Connections
     OAI_EP -->|read-only| INGEST
     REST_EP -->|read-only| INGEST
-    API -->|JSON + widget| PATRON
+    API -->|JSON + widget.js| PATRON

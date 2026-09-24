@@ -1,0 +1,127 @@
+graph TD
+    %% Styling
+    classDef infra fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px,color:#0f172a;
+    classDef boundary fill:#ffffff,stroke:#94a3b8,stroke-dasharray: 4 4,stroke-width:1.5px,color:#334155;
+    classDef service fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#0f172a;
+    classDef module fill:#f8fafc,stroke:#475569,stroke-width:1px,color:#0f172a;
+    classDef browser fill:#ecfdf5,stroke:#059669,stroke-width:2px,color:#065f46;
+    classDef measured fill:#fef9e7,stroke:#b4770a,stroke-width:1.5px,color:#7a4f00;
+
+    subgraph PATRON_VIEW["THE PATRON'S BROWSER · the library's own catalogue"]
+        RECORD["record page
+
+
+the catalogue's own display"]
+        SEARCH["search results page
+
+
+the catalogue's own search,
+its own ranking"]
+    end
+    class PATRON_VIEW boundary;
+    class RECORD,SEARCH infra;
+
+    subgraph TIERS["WIDGET · additive at every tier, ordering never touched"]
+        T1["Tier 1 — related books
+
+
+panel on a record page,
+drawn from the library's own holdings,
+with availability"]
+        T2["Tier 2 — zero-result rescue
+
+
+the same query answered by meaning,
+under a labelled heading
+
+
+appears ONLY when the catalogue
+found nothing"]
+        T3["Tier 3 — related band
+
+
+appended BELOW the catalogue's results,
+at a stricter floor (min score + 0.05),
+only works it did not already show"]
+    end
+    class TIERS boundary;
+    class T1,T2,T3 module;
+
+    RECORD --> T1
+    SEARCH -->|no results| T2
+    SEARCH -->|has results| T3
+
+    subgraph API_SVC["API · bookrs/api"]
+        SIMILAR["/works/{id}/similar
+
+
+stored vectors, no model needed"]
+        SEMANTIC["/search/semantic
+
+
+query encoded at request time,
+score floor 0.55 (calibrated)"]
+        ENCODER["encoder_onnx.py
+
+
+ONNX Runtime, no PyTorch.
+Masked mean pooling matched to
+bookrs/embedding/encoder.py exactly.
+
+
+Lazy-loaded: ~1s once,
+tens of ms per query"]
+        SEMANTIC --> ENCODER
+    end
+    class API_SVC service;
+    class SIMILAR,SEMANTIC,ENCODER module;
+
+    T1 --> SIMILAR
+    T2 --> SEMANTIC
+    T3 --> SEMANTIC
+
+    DB[("PostgreSQL
+
+
+work vectors, 384 dimensions")]
+    class DB infra;
+    SIMILAR -->|read| DB
+    SEMANTIC -->|read| DB
+
+    EVAL["**Measured**, not asserted
+
+
+120 queries built from the catalogue's
+own subject headings — independent of
+the recommender by construction
+
+
+Zebra found nothing: 77 of 120
+BookRS answered: 69 of 77 — 90%
+
+
+natural 100% · concept 100% · typo 79%
+
+
+Rescue rate, not relevance: tools/evaluate.py
+writes a judgement sheet for a librarian,
+because a generated label would be the
+embedding grading its own output"]
+    class EVAL measured;
+    T2 -.->|evaluated by| EVAL
+
+    INSTALL["**Installed through each system's own mechanism**
+
+
+Koha — plugin (.kpz), opac_js hook, carries the
+per-request CSP nonce
+
+
+PMB — biblio_main_header parameter (accepts HTML);
+searches by POST, so the query is read from the
+search box rather than the URL
+
+
+No template of theirs is modified in either"]
+    class INSTALL module;
+    TIERS -.-> INSTALL

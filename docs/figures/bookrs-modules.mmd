@@ -117,9 +117,18 @@ refit entry point · records fitted_at"]
         ALS -->|factors| T_FACTORS
 
         %% API
-        subgraph API["API (always running) · read-only · loads no model"]
+        subgraph API["API (always running) · read-only · ONNX query encoder, no PyTorch"]
             SEARCH["search.py
-trigram exact search"]
+trigram exact search
+(ISBN, title, author)"]
+            SEMANTIC["semantic search
+query encoded at request time
+score floor 0.55, calibrated"]
+            ENCODER["encoder_onnx.py
+ONNX Runtime, no PyTorch
+pooling matched to embedding/encoder.py
+verified by tools/parity_test.py"]
+            SEMANTIC --> ENCODER
             SIMILAR["similar.py
 vector arithmetic over cached matrix"]
             RANK["rank.py
@@ -134,10 +143,11 @@ serves widget.js"]
             SEARCH --> RANK
         end
         class API service;
-        class SEARCH,SIMILAR,RANK,HEALTH,WIDGET module;
+        class SEARCH,SEMANTIC,ENCODER,SIMILAR,RANK,HEALTH,WIDGET module;
 
         T_WORKS -->|read| SEARCH
         T_EMB -->|read vectors| SIMILAR
+    T_EMB -->|read vectors| SEMANTIC
         T_FACTORS -->|read factors| RANK
         T_SOURCES -.->|FK: source_id| T_WORKS
         T_SOURCES -.->|FK: source_id| T_LOANS
