@@ -14,6 +14,12 @@ import psycopg
 
 SOURCE_ID = int(os.environ.get("PLAN_SOURCE_ID", "1"))
 N_PATRONS = int(os.environ.get("PLAN_PATRONS", "400"))
+# Where the patron numbering starts. A second run with an offset past the
+# existing population creates new borrowers rather than adding loans to
+# the same ones -- which is the difference between "the library gained
+# readers" and "the same readers borrowed more", and the two have
+# different effects on a refit.
+PATRON_OFFSET = int(os.environ.get("PLAN_PATRON_OFFSET", "0"))
 SEED = int(os.environ.get("PLAN_SEED", "42"))
 MIN_TOPIC = 15
 GLOBAL_HEAD = int(os.environ.get("PLAN_GLOBAL_HEAD", "300"))  # the genuinely popular shelf
@@ -24,7 +30,7 @@ rng = random.Random(SEED)
 with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
     rows = conn.execute(
         "SELECT source_record_id, subjects FROM works "
-        "WHERE source_id = %s AND deleted_at IS NULL", (SOURCE_ID,)).fetchall()
+        "WHERE source_id = %s AND deleted_at IS NULL ORDER BY source_record_id", (SOURCE_ID,)).fetchall()
 
 def bib(rid):  # "KOHA-OAI-TEST:42" -> "42"
     return rid.rpartition(":")[2]
@@ -58,7 +64,7 @@ def pick_from(bibs):
     return rng.choices(bibs, weights=w, k=1)[0]
 
 n_loans = 0
-for p in range(N_PATRONS):
+for p in range(PATRON_OFFSET, PATRON_OFFSET + N_PATRONS):
     activity = min(int(rng.paretovariate(1.3)) + 6, 50)       # mean ~11, heavy tail, capped
     k = rng.choice((1, 1, 2, 2, 3))
     interests = rng.choices(topics, weights=topic_w, k=k) if topics else []

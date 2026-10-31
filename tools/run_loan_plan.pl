@@ -31,11 +31,15 @@ my @patrons;
 for my $i (0 .. $n_patrons - 1) {
     my $card = sprintf('SYN%05d', $i);
     my $p = Koha::Patrons->find({ cardnumber => $card });
-    $p //= Koha::Patron->new({
+    $p //= eval { Koha::Patron->new({
         cardnumber => $card, surname => 'Synthetic', firstname => sprintf('Patron %d', $i),
         categorycode => $cat->categorycode, branchcode => $lib->branchcode,
         dateenrolled => '2024-01-01', dateexpiry => '2030-12-31',
-    })->store;
+    })->store };
+    # A patron that cannot be created is not a reason to abandon the run:
+    # 944 already exist from earlier runs, and a collision on the derived
+    # userid should skip that patron rather than kill the plan.
+    unless ($p) { push @patrons, undef; next }
     push @patrons, $p;
 }
 printf "    %d patrons ready (category %s, branch %s)\n", scalar @patrons, $cat->categorycode, $lib->branchcode;
