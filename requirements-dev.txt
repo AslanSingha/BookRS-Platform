@@ -3,3 +3,8 @@ httpx==0.27.2          # HTTP client; sync + async, better timeout handling than
 pytest==8.3.3
 pytest-httpx==0.30.0   # mock OAI responses without a live Koha
 psycopg[binary]==3.2.3  # PostgreSQL driver; binary avoids a build toolchain
+
+# Read-only reads from a library database for what its API does not
+# expose (bookrs/ingestion/direct.py). Pure Python deliberately: this
+# image carries no C toolchain, and the read runs a few times a day.
+pymysql==1.1.1

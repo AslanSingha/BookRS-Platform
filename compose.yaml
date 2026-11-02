@@ -23,6 +23,14 @@ services:
       retries: 20
 
   ingestion:
+    # Two networks, because the direct reader (bookrs/ingestion/direct.py)
+    # needs to reach the library's own database and OAI-PMH does not.
+    # That asymmetry is a deployment fact worth noticing: this service can
+    # harvest a catalogue from anywhere that can reach the OPAC over HTTP,
+    # but reading what the API does not expose means sitting next to the
+    # database. koha-net is declared external and optional -- a deployment
+    # without it loses only the direct channel.
+    networks: [default, koha-net]
     depends_on:
       db:
         condition: service_healthy
@@ -146,3 +154,9 @@ services:
 volumes:
   db-data:
   model-cache:
+
+networks:
+  default:
+  koha-net:
+    external: true
+    name: kohadev_kohanet

@@ -78,7 +78,11 @@ function fetchStub() {
 
 const sandbox = {
   document: document,
-  window: { location: { search: "?biblionumber=345" } },
+  // A real browser always supplies pathname; this harness did not, and
+  // isSearchPage() reads it. The widget was right and the double was
+  // incomplete, which is the usual direction of that mistake.
+  window: { location: { pathname: "/cgi-bin/koha/opac-detail.pl",
+                        search: "?biblionumber=345" } },
   fetch: fetchStub,
   encodeURIComponent: encodeURIComponent,
   parseInt: parseInt,
