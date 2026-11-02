@@ -315,3 +315,34 @@ message says what it means.
 
 That is the ordinary condition of integrating with software of this age, and
 it is why this file exists.
+
+### `RESTBasicAuth` does not survive a recreate
+
+Harvesting circulation needs Koha's `RESTBasicAuth` preference enabled, and
+recreating the instance resets it. `provision-koha.sh` sets it on a fresh
+instance; `ktd --persistent-db up` does not, because it is reusing a database
+rather than provisioning one.
+
+The failure arrives from this service rather than from Koha:
+
+```
+CirculationError: Authentication failed. Check the credentials, and that
+Koha's RESTBasicAuth system preference is enabled.
+```
+
+Credentials that worked yesterday are the obvious suspect and the wrong one.
+
+```bash
+docker exec kohadev-koha-1 koha-mysql kohadev -e \
+  "UPDATE systempreferences SET value='1' WHERE variable='RESTBasicAuth';"
+docker restart kohadev-memcached-1
+docker exec kohadev-koha-1 koha-plack --restart kohadev
+```
+
+The memcached restart is not optional: Koha reads preferences through
+memcached, so a correct value in the database is served stale until the cache
+is cleared. `nc` is not installed in the memcached container, so a `flush_all`
+over netcat fails and restarting the container is the reliable form.
+
+This belongs in the restart sequence above, between fixing the log ownership
+and verifying the endpoint.
