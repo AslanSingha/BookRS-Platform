@@ -260,6 +260,16 @@ def store(conn, source_id: int, works: list[DbWork]) -> dict:
                      it["item_type"], it["due_date"], it["issues"]),
                 )
                 stats["items"] += 1
+
+        # Not a harvest, but the same question: when was this source
+        # last read? A source that always reports "never" looks broken
+        # to anyone checking freshness, and a stalled read is exactly
+        # what freshness reporting exists to catch.
+        cur.execute(
+            "UPDATE sources SET last_harvest = now(), last_had_items = %s "
+            "WHERE id = %s",
+            (stats["items"] > 0 or any(w.items for w in works), source_id),
+        )
     conn.commit()
     return stats
 
