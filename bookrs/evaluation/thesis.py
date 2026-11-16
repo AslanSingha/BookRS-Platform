@@ -68,6 +68,15 @@ CONFIDENCE = {
     "1+2r+3d": lambda r, d: 1.0 + 2.0 * r + 3.0 * d,
     "1+2r": lambda r, d: 1.0 + 2.0 * r,
     "r": lambda r, d: r.astype(np.float32),
+    # A constant, set to the mean of 1 + 2r on the UCSD fixture (mean
+    # rating 3.99). It answers a question "1" cannot: with the same
+    # weight on every rating as the star formula gives on average, how
+    # much of the result is the stars and how much is merely weighting
+    # what was observed above what was not?
+    "9": lambda r, d: np.full(len(r), 9.0, dtype=np.float32),
+    # In implicit's ALS a confidence of 1 is the weight an unobserved
+    # pair already has, so this is no weighting at all -- the floor, not
+    # the thesis's "binary" configuration.
     "1": lambda r, d: np.ones(len(r), dtype=np.float32),
 }
 
@@ -270,6 +279,63 @@ def evaluate(score_rows, seen: csr_matrix, relevant: csr_matrix,
     )
 
 
+def load_embeddings(conn, source_id: int, works: np.ndarray
+                    ) -> tuple[np.ndarray, int, str]:
+    """Content vectors for the works, in the works' order.
+
+    Returns (matrix, how many works have a vector, model name). A work
+    without one keeps a zero row: it contributes nothing to a reader's
+    profile and scores zero against every profile, which is what having
+    no text should mean.
+    """
+    rows = conn.execute(
+        "SELECT e.work_id, e.vector, e.model FROM embeddings e "
+        "JOIN works w ON w.id = e.work_id WHERE w.source_id = %s",
+        (source_id,)).fetchall()
+    where = {int(w): n for n, w in enumerate(works)}
+    rows = [r for r in rows if r[0] in where]
+    if not rows:
+        return np.zeros((len(works), 0), dtype=np.float32), 0, ""
+    models = sorted({r[2] for r in rows})
+    if len(models) > 1:
+        raise SystemExit(f"embeddings for source {source_id} come from more than "
+                         f"one model ({', '.join(models)}); vectors from different "
+                         "models are not comparable. Re-embed the source.")
+    matrix = np.zeros((len(works), len(rows[0][1])), dtype=np.float32)
+    for work_id, vector, _ in rows:
+        matrix[where[work_id]] = vector
+    return matrix, len(rows), models[0]
+
+
+def content_scores(train_binary: csr_matrix, n_train: np.ndarray,
+                   embeddings: np.ndarray, who: np.ndarray) -> np.ndarray:
+    """Similarity of every work to each reader's profile.
+
+    The profile is the mean of the vectors of the books the reader rated
+    in training -- every one of them, weighted equally, whatever the
+    rating. That is the thesis's definition (experiment 04), kept as it
+    is so that the only thing changed here is which text belongs to
+    which book.
+    """
+    profile = np.asarray(train_binary[who] @ embeddings, dtype=np.float32)
+    profile /= np.maximum(n_train[who], 1)[:, None]
+    return profile @ embeddings.T
+
+
+def _unit(x: np.ndarray) -> np.ndarray:
+    lo = x.min(axis=1, keepdims=True)
+    hi = x.max(axis=1, keepdims=True)
+    return (x - lo) / (hi - lo + 1e-9)
+
+
+def blend(alpha: float, content: np.ndarray, collaborative: np.ndarray) -> np.ndarray:
+    """``alpha * content + (1 - alpha) * collaborative``, each rescaled
+    to 0-1 per reader across the whole catalogue first, as the thesis
+    does: the two scores are on unrelated scales and adding them raw
+    would let whichever has the larger numbers decide."""
+    return alpha * _unit(content) + (1.0 - alpha) * _unit(collaborative)
+
+
 def thesis_readers(path: str, borrower_map: str, secret: str,
                    patrons: list[str]) -> np.ndarray:
     """Indices of the readers the thesis scored.
@@ -329,6 +395,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--min-ratings", type=int, default=10,
                     help="Readers with fewer ratings are left out (thesis: 10).")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--no-hybrid", action="store_true",
+                    help="Skip the content and hybrid rows.")
+    ap.add_argument("--tuning-readers", type=int, default=20_000,
+                    help="Readers used to choose alpha. They are then left "
+                         "out of the hybrid rows, so alpha is never scored "
+                         "on the readers it was chosen on.")
     ap.add_argument("--thesis-readers", default=None,
                     help="thesis_eval_users.txt from the fixture.")
     ap.add_argument("--borrower-map", default=None,
@@ -342,8 +414,12 @@ def main(argv: list[str] | None = None) -> int:
     t0 = time.monotonic()
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
         data = load(conn, a.source_id)
-    loaded = data.n
-    data = restrict(data, a.min_ratings)
+        loaded = data.n
+        data = restrict(data, a.min_ratings)
+        if a.no_hybrid:
+            vectors, n_vectors, model = np.zeros((0, 0), dtype=np.float32), 0, ""
+        else:
+            vectors, n_vectors, model = load_embeddings(conn, a.source_id, data.works)
     n_readers, n_works = len(data.patrons), len(data.works)
     log.info("%d ratings, %d readers, %d works (%d ratings left out by the "
              "%d-rating minimum); loaded in %.0fs", data.n, n_readers, n_works,
@@ -419,6 +495,62 @@ def main(argv: list[str] | None = None) -> int:
     if liked_all.skipped:
         out.append(f"{liked_all.skipped:,} readers have no held-out book rated 4 or 5 "
                    "and are not in the second block.")
+    print("\n".join(out), flush=True)
+
+    if a.no_hybrid:
+        return 0
+    if not n_vectors:
+        print(f"\nNo content vectors for source {a.source_id}, so no content or "
+              "hybrid rows. Create them with:\n  docker compose run --rm embedding "
+              f"python -m bookrs.embedding.cli --source-id {a.source_id}")
+        return 0
+
+    train_binary = (train > 0).astype(np.float32).tocsr()
+    n_train = np.asarray(train_binary.sum(axis=1)).ravel()
+
+    def hybrid(alpha):
+        def score(who):
+            cf = readers_f[who] @ works_f.T
+            if alpha == 0.0:
+                return cf
+            content = content_scores(train_binary, n_train, vectors, who)
+            return content if alpha == 1.0 else blend(alpha, content, cf)
+        return score
+
+    # alpha is chosen on one set of readers and reported on the rest.
+    # Choosing it on the readers it is then scored on -- which is what
+    # sweeping alpha over the evaluation set does -- reports the best of
+    # eleven tries as if it were one.
+    shuffled = np.random.default_rng(a.seed + 1).permutation(n_readers)
+    n_tune = min(a.tuning_readers, n_readers // 2)
+    tuning, rest = np.sort(shuffled[:n_tune]), np.sort(shuffled[n_tune:])
+
+    alphas = [round(0.1 * k, 1) for k in range(11)]
+    sweep = []
+    for alpha in alphas:
+        sweep.append(evaluate(hybrid(alpha), train, test_all, tuning))
+        log.info("alpha %.1f on %d tuning readers: P@10 %.4f", alpha,
+                 n_tune, sweep[-1].p10)
+    best = alphas[int(np.argmax([s.p10 for s in sweep]))]
+
+    out = [
+        "", f"Content and hybrid. Vectors: {model}, {n_vectors:,} of {n_works:,} works. "
+            "Score = alpha * content + (1 - alpha) * ALS.",
+        "", f"alpha chosen on {n_tune:,} readers (P@10):",
+        "  alpha " + " ".join(f"{al:>6.1f}" for al in alphas),
+        "  P@10  " + " ".join(f"{s.p10:>6.4f}" for s in sweep),
+        "", f"scored on the other {len(rest):,} readers, every held-out book relevant",
+        _HEAD,
+        _row("  ALS only (alpha 0)", evaluate(hybrid(0.0), train, test_all, rest)),
+        _row("  content only (alpha 1)", evaluate(hybrid(1.0), train, test_all, rest)),
+        _row("  hybrid, alpha 0.1 (the thesis's value)",
+             evaluate(hybrid(0.1), train, test_all, rest)),
+    ]
+    if best not in (0.0, 0.1, 1.0):
+        out.append(_row(f"  hybrid, alpha {best:.1f} (chosen above)",
+                        evaluate(hybrid(best), train, test_all, rest)))
+    else:
+        out.append(f"  the sweep chose alpha {best:.1f}, which is already a row above")
     print("\n".join(out))
     return 0
 

@@ -12,7 +12,7 @@ pytest.importorskip("scipy")
 from scipy.sparse import csr_matrix
 
 from bookrs.evaluation.thesis import (
-    CONFIDENCE, Data, evaluate, restrict, split,
+    CONFIDENCE, Data, blend, content_scores, evaluate, restrict, split,
 )
 
 
@@ -159,6 +159,57 @@ class TestConfidence:
         d = np.zeros(5, dtype=np.float32)
         for name, f in CONFIDENCE.items():
             assert (np.asarray(f(r, d)) > 0).all(), name
+
+
+class TestContentAndBlend:
+    E = np.array([[1, 0], [0, 1], [0.6, 0.8], [1, 0]], dtype=np.float32)
+
+    def _train(self):
+        # reader 0 rated works 0 and 1; reader 1 rated nothing
+        return csr_matrix((np.ones(2, dtype=np.float32), ([0, 0], [0, 1])), shape=(2, 4))
+
+    def test_the_profile_is_the_mean_of_the_rated_books_vectors(self):
+        t = self._train()
+        n = np.asarray(t.sum(axis=1)).ravel()
+        got = content_scores(t, n, self.E, np.array([0]))
+        profile = np.array([0.5, 0.5])
+        assert got[0] == pytest.approx(self.E @ profile)
+
+    def test_a_reader_with_no_history_scores_zero_everywhere(self):
+        t = self._train()
+        n = np.asarray(t.sum(axis=1)).ravel()
+        assert not content_scores(t, n, self.E, np.array([1])).any()
+
+    def test_a_work_without_a_vector_does_not_move_the_profile_direction(self):
+        E = self.E.copy()
+        E[1] = 0                        # work 1 has no text
+        t = self._train()
+        n = np.asarray(t.sum(axis=1)).ravel()
+        got = content_scores(t, n, E, np.array([0]))[0]
+        assert got[1] == 0.0            # and matches nothing
+        assert got[0] == got[3] > got[2] > 0
+
+    def test_blend_rescales_each_side_before_adding(self):
+        content = np.array([[0.0, 0.5, 1.0]], dtype=np.float32)
+        cf = np.array([[300.0, 100.0, 200.0]], dtype=np.float32)
+        got = blend(0.5, content, cf)[0]
+        assert got == pytest.approx([0.5, 0.25, 0.75], abs=1e-6)
+
+    def test_the_ends_of_the_range_rank_as_one_side_alone(self):
+        rng = np.random.default_rng(3)
+        content, cf = rng.random((5, 30)), rng.random((5, 30)) * 50
+        assert (np.argsort(blend(0.0, content, cf)) == np.argsort(cf)).all()
+        assert (np.argsort(blend(1.0, content, cf)) == np.argsort(content)).all()
+
+    def test_a_flat_score_does_not_divide_by_zero(self):
+        got = blend(0.3, np.zeros((1, 4)), np.array([[1.0, 2.0, 3.0, 4.0]]))
+        assert np.isfinite(got).all()
+
+    def test_the_constant_weight_is_the_mean_of_the_star_formula(self):
+        """On the fixture's rating distribution, to within rounding."""
+        counts = np.array([356063, 909207, 3299312, 5723797, 5994666])
+        mean = (counts * (1 + 2 * np.arange(1, 6))).sum() / counts.sum()
+        assert CONFIDENCE["9"](np.ones(1), np.zeros(1))[0] == pytest.approx(mean, abs=0.05)
 
 
 class TestEndToEnd:
