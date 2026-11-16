@@ -62,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restrict to one configured library. Omitted means all of them.",
     )
     p.add_argument(
+        "--signal", choices=("loans", "ratings"), default="loans",
+        help="What to learn from. loans: circulation, weighted by intensity. "
+             "ratings: star ratings read from the library, weighted "
+             "1 + 2r + 3d as in the thesis.",
+    )
+    p.add_argument(
         "--dry-run", action="store_true",
         help="Report what circulation is available and stop, without "
              "touching the stored factors.",
@@ -84,19 +90,26 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     with psycopg.connect(dsn) as conn:
+        # work_factors.raw_vector (migration 4) is written below, and a
+        # refit may be the first thing run after an upgrade.
+        from bookrs.db.migrations import apply_migrations
+        apply_migrations(conn)
+        conn.commit()
+
         if args.dry_run:
-            loans, patrons, works = conn.execute(
-                """
+            # Table name from a fixed choice, never from input.
+            n, patrons, works = conn.execute(
+                f"""
                 SELECT count(*), count(DISTINCT patron_ref), count(DISTINCT work_id)
-                FROM loans
+                FROM {args.signal}
                 WHERE (%s::int IS NULL OR source_id = %s::int)
                 """,
                 (args.source_id, args.source_id),
             ).fetchone()
-            log.info("%d loans from %d patrons across %d works",
-                     loans, patrons, works)
-            if loans == 0:
-                log.warning("no circulation: a refit would produce no factors")
+            log.info("%d %s from %d patrons across %d works",
+                     n, args.signal, patrons, works)
+            if n == 0:
+                log.warning("no %s: a refit would produce no factors", args.signal)
             return 0
 
         params = ALSParams()
@@ -105,7 +118,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.iterations is not None:
             params = ALSParams(**{**vars(params), "iterations": args.iterations})
 
-        stats = factorise(conn, params=params, source_id=args.source_id)
+        stats = factorise(conn, params=params, source_id=args.source_id,
+                          signal=args.signal)
         conn.commit()
 
     # Reported rather than merely logged as a count, because these are the

@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 # incomparable to new ones: different dimensionality, a different
 # confidence formula, a different algorithm. Same guard as the embedder
 # and mapper versions, one layer along.
-FACTORISER_VERSION = 1
+FACTORISER_VERSION = 2   # 2: raw factors stored beside the normalised ones
 
 
 @dataclass
@@ -223,12 +223,13 @@ def choose_factors(matrix: csr_matrix) -> int:
     return int(min(128, max(16, supported)))
 
 
-def train(matrix: csr_matrix, params: ALSParams) -> np.ndarray:
-    """Fit ALS and return the item factors, L2-normalised.
+def fit_factors(matrix: csr_matrix, params: ALSParams) -> np.ndarray:
+    """Fit ALS and return the item factors exactly as fitted.
 
-    Normalising at training time means a dot product between two rows is
-    cosine similarity, matching how the embedding vectors are stored and
-    letting the two be blended without rescaling.
+    These are what folding a reader in needs (``folding.py``): the solve
+    for a new reader is the same one ALS performs for an existing reader
+    during training, against these factors and not their normalised
+    form.
     """
     from implicit.als import AlternatingLeastSquares
 
@@ -245,8 +246,20 @@ def train(matrix: csr_matrix, params: ALSParams) -> np.ndarray:
         calculate_training_loss=False,
     )
     model.fit(matrix, show_progress=False)
+    return np.asarray(model.item_factors, dtype=np.float32)
 
-    factors = np.asarray(model.item_factors, dtype=np.float32)
+
+def normalise(factors: np.ndarray) -> np.ndarray:
+    """L2-normalise rows, so a dot product between two is a cosine.
+
+    This matches how the embedding vectors are stored and lets the two
+    be blended without rescaling.
+    """
     norms = np.linalg.norm(factors, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     return factors / norms
+
+
+def train(matrix: csr_matrix, params: ALSParams) -> np.ndarray:
+    """Fit ALS and return the item factors, L2-normalised."""
+    return normalise(fit_factors(matrix, params))

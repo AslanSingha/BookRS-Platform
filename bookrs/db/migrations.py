@@ -118,6 +118,29 @@ MIGRATIONS: tuple[Migration, ...] = (
             "reviewed BOOLEAN NOT NULL DEFAULT false",
         ),
     ),
+    Migration(
+        version=4,
+        description="work_factors.raw_vector: factors as fitted, for folding-in",
+        statements=(
+            # work_factors.vector is L2-normalised so that a dot product
+            # between two works is a cosine, which is what "readers of
+            # this also read" needs. Placing a new reader in the factor
+            # space is a different calculation: a least-squares solve
+            # against the factors as the fit produced them, lengths
+            # included. A work's length in that space carries how much
+            # evidence stands behind it, and normalising throws it away.
+            #
+            # Measured on 10,000 readers withheld from training
+            # (bookrs/evaluation/coldstart.py): solving against the
+            # whole catalogue reaches P@10 0.179 from twenty ratings,
+            # against 0.090 for a solve over the rated books alone. The
+            # first needs these.
+            #
+            # Nullable: rows written before this migration have none,
+            # and the next refit replaces every row anyway.
+            "ALTER TABLE work_factors ADD COLUMN IF NOT EXISTS raw_vector REAL[]",
+        ),
+    ),
 )
 
 _LEDGER = """

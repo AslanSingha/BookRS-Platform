@@ -342,6 +342,9 @@ CREATE TABLE work_factors (
     work_id            BIGINT      PRIMARY KEY REFERENCES works(id) ON DELETE CASCADE,
     vector             REAL[]      NOT NULL,
     dimensions         SMALLINT    NOT NULL,
+    -- The same factors before normalising. Item-to-item similarity uses
+    -- `vector`; folding a reader in uses these (migration 4).
+    raw_vector         REAL[],
 
     -- Factors from different runs are not comparable: a change of
     -- dimensionality, confidence formula or algorithm puts them in a

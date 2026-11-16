@@ -101,3 +101,35 @@ def confidence(interaction: Interaction, weights: ConfidenceWeights) -> float:
         + weights.repeat * interaction.n_repeats
     )
     return min(max(value, 1.0), weights.ceiling)
+
+
+def rating_confidence(rating, reviewed):
+    """The thesis's formula for a star rating: ``c = 1 + 2r + 3d``.
+
+    ``rating`` is 1-5 and ``reviewed`` is 0 or 1; scalars or arrays.
+
+    Used where a library holds ratings (Koha's ``ratings`` table). The
+    module docstring above expects a signal without stars to cost about
+    a fifth of the precision, on the strength of the thesis's
+    Experiment 6. Measured here on the UCSD fixture read out of Koha
+    (bookrs/evaluation/thesis.py, all 446,664 readers), that is not what
+    happens:
+
+    ===================  ======
+    confidence             P@10
+    ===================  ======
+    1 + 2r + 3d          0.1988
+    1 + 2r               0.1988
+    9 (no stars at all)  0.1978
+    1 (no weighting)     0.1300
+    ===================  ======
+
+    The review flag contributes nothing and the star values about a
+    thousandth. What matters is that an observed pair is weighted well
+    above an unobserved one. The formula is kept because it is the
+    thesis's and costs nothing, not because the stars earn their place
+    -- and the loan weights above should be read in that light: their
+    size relative to 1 matters more than their size relative to each
+    other.
+    """
+    return 1.0 + 2.0 * rating + 3.0 * reviewed

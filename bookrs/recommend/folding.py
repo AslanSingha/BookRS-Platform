@@ -60,7 +60,8 @@ import numpy as np
 
 from bookrs.recommend.confidence import ConfidenceWeights, Interaction, confidence
 
-__all__ = ["FoldedPatron", "fold_in"]
+__all__ = ["FoldedPatron", "fold_in", "FactorSpace", "place_reader",
+           "FULL_SOLVE_FROM"]
 
 
 @dataclass(frozen=True)
@@ -146,3 +147,108 @@ def fold_in(
         n_works=len(usable),
         n_loans=sum(i.n_loans for i in usable),
     )
+
+
+# --------------------------------------------------------------------
+# Placing a reader, as measured.
+#
+# fold_in() above solves over the works a patron has interacted with and
+# nothing else. bookrs/evaluation/coldstart.py measured that solve
+# against the one Hu, Koren and Volinsky state -- the one ALS itself
+# performs for each reader during training -- on 10,000 readers withheld
+# from the fit, revealing their ratings a few at a time (P@10):
+#
+#     ratings revealed        1      3      5     10     20
+#     most-rated works     .090   .091   .092   .096   .102
+#     observed works only  .099   .098   .099   .097   .090
+#     whole catalogue      .056   .085   .102   .131   .179
+#
+# The observed-only solve does not improve as it is told more, and is
+# worse at twenty ratings than at one. With k=128 and a handful of
+# observations it is fitted to those few points and free everywhere
+# else; what it returns is close to a popularity list. The full solve
+# counts every work the reader did not choose as weak evidence, which is
+# what ties the answer to the rest of the catalogue.
+#
+# Below five observations the order reverses: one or three points are
+# too few to locate anyone, and the popularity-like answer is the better
+# one. The crossover sits at five, which is where the thesis put its own
+# threshold.
+#
+# That measurement was on ratings. fold_in() is left as it is for the
+# loan path, where nothing has been measured, and the functions below
+# are what a personalised answer should be built on.
+# --------------------------------------------------------------------
+
+#: Observations from which the whole-catalogue solve is used.
+FULL_SOLVE_FROM = 5
+
+#: Confidence given to each observation in the observed-only solve. The
+#: thesis's recommender passes every rating as 1.0, so every confidence
+#: is 1 + 2 * 1. Kept, because this is the setting that was measured.
+_FEW_CONFIDENCE = 3.0
+
+
+@dataclass(frozen=True)
+class FactorSpace:
+    """The fitted work factors, unnormalised, and what is derived from them.
+
+    ``gram`` is ``Y^T Y`` over every work. It is what lets the solve
+    account for the whole catalogue without visiting it: k by k, computed
+    once per fit, however many works there are.
+    """
+
+    work_ids: np.ndarray        # (n,)
+    factors: np.ndarray         # (n, k), as fitted
+    n_patrons: np.ndarray       # (n,)
+    gram: np.ndarray            # (k, k)
+    index: Mapping[int, int]    # work_id -> row
+
+    @classmethod
+    def from_rows(cls, rows) -> "FactorSpace":
+        """From ``(work_id, raw_vector, n_patrons)`` rows."""
+        rows = [r for r in rows if r[1] is not None]
+        if not rows:
+            raise ValueError(
+                "no raw factors stored. Refit with this version "
+                "(python -m bookrs.recommend.cli); factors written before "
+                "migration 4 carry only the normalised form.")
+        ids = np.array([r[0] for r in rows], dtype=np.int64)
+        Y = np.array([r[1] for r in rows], dtype=np.float32)
+        Yd = Y.astype(np.float64)
+        return cls(ids, Y, np.array([r[2] for r in rows], dtype=np.int64),
+                   Yd.T @ Yd, {int(w): n for n, w in enumerate(ids)})
+
+    def __len__(self) -> int:
+        return len(self.work_ids)
+
+
+def place_reader(confidences: Mapping[int, float], space: FactorSpace,
+                 regularization: float = 0.1) -> tuple[np.ndarray | None, str]:
+    """A reader's vector in the factor space, and which solve produced it.
+
+    ``confidences`` maps each work the reader has rated to the
+    confidence of that rating. Works with no factors are ignored.
+
+    Returns ``(None, "none")`` for a reader with nothing usable: there is
+    no vector to compute, and the caller should show what most readers
+    chose. Otherwise the vector ``x`` is such that ``space.factors @ x``
+    scores every work -- unnormalised on purpose, because it is used for
+    ranking one reader's list, not compared across readers.
+    """
+    known = [(space.index[w], c) for w, c in confidences.items() if w in space.index]
+    if not known:
+        return None, "none"
+
+    rows = np.array([r for r, _ in known], dtype=np.int64)
+    B = space.factors[rows].astype(np.float64)
+    eye = regularization * np.eye(B.shape[1])
+
+    if len(known) < FULL_SOLVE_FROM:
+        c = np.full(len(known), _FEW_CONFIDENCE)
+        x = np.linalg.solve((B.T * c) @ B + eye, B.T @ c)
+        return x.astype(np.float32), "few"
+
+    c = np.array([c for _, c in known], dtype=np.float64)
+    x = np.linalg.solve(space.gram + (B.T * (c - 1.0)) @ B + eye, B.T @ c)
+    return x.astype(np.float32), "full"
