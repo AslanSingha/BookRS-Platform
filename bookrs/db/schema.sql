@@ -186,6 +186,9 @@ CREATE TABLE ratings (
     work_id      BIGINT      NOT NULL REFERENCES works(id) ON DELETE CASCADE,
     rating       SMALLINT    NOT NULL CHECK (rating BETWEEN 1 AND 5),
     rated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Whether the same patron also wrote a review of the work. The fact
+    -- only: the text is never read (migration 3).
+    reviewed     BOOLEAN     NOT NULL DEFAULT false,
     PRIMARY KEY (source_id, patron_ref, work_id)
 );
 

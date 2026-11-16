@@ -98,6 +98,26 @@ MIGRATIONS: tuple[Migration, ...] = (
             "request_headers JSONB NOT NULL DEFAULT '{}'::jsonb",
         ),
     ),
+    Migration(
+        version=3,
+        description="ratings.reviewed: whether the patron also wrote a review",
+        statements=(
+            # The thesis weighted an interaction as c = 1 + 2r + 3d, where
+            # d flags a written review. The rating r had a column here; d
+            # did not, so the second term could not be computed from what
+            # this service stored.
+            #
+            # Koha keeps reviews in their own table. Only the fact of one
+            # is carried over -- a boolean, never the text. What a patron
+            # wrote is theirs and the library's, and the confidence
+            # formula has no use for it.
+            #
+            # DEFAULT false is also the true value for every row written
+            # before this migration: nothing read reviews until now.
+            "ALTER TABLE ratings ADD COLUMN IF NOT EXISTS "
+            "reviewed BOOLEAN NOT NULL DEFAULT false",
+        ),
+    ),
 )
 
 _LEDGER = """
