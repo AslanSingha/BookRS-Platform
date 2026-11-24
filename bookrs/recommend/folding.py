@@ -203,6 +203,17 @@ class FactorSpace:
     n_patrons: np.ndarray       # (n,)
     gram: np.ndarray            # (k, k)
     index: Mapping[int, int]    # work_id -> row
+    # Rows with the same number are editions of one book (personal.py's
+    # work_key). None: every row its own book.
+    groups: np.ndarray | None = None
+
+    def with_groups(self, keys) -> "FactorSpace":
+        """A copy with rows sharing a key given the same group number."""
+        from dataclasses import replace
+
+        numbers: dict[str, int] = {}
+        return replace(self, groups=np.array(
+            [numbers.setdefault(k, len(numbers)) for k in keys], dtype=np.int64))
 
     @classmethod
     def from_rows(cls, rows) -> "FactorSpace":

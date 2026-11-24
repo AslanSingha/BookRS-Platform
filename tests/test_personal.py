@@ -257,3 +257,56 @@ class TestAgainstTheDatabase:
         recs, method = recommend_for_patron(conn, sid, "nobody", limit=2)
         assert method == "none"
         assert [r.work_id for r in recs] == [works[3], works[2]]
+
+
+class TestEditions:
+    def _space(self):
+        # works 1 and 2 are editions of one book; 3, 4, 5 are distinct
+        rows = [(1, [1.0, 0.0], 50), (2, [0.99, 0.01], 40), (3, [0.9, 0.1], 30),
+                (4, [0.0, 1.0], 20), (5, [0.1, 0.9], 10)]
+        keys = ["catching fire\x1fsuzanne collins"] * 2 + ["a", "b", "c"]
+        return FactorSpace.from_rows(rows).with_groups(keys)
+
+    def test_work_key_ignores_case_width_and_spacing(self):
+        from bookrs.recommend.personal import work_key
+
+        a = work_key("Catching Fire (The Hunger Games, #2)", ["Suzanne Collins"])
+        b = work_key("catching  fire (the hunger games, #2) ", ["SUZANNE COLLINS", "x"])
+        assert a == b
+        assert a != work_key("Catching Fire (The Hunger Games, #2)", ["Someone Else"])
+        assert work_key("Untitled", []) != work_key("Untitled", ["A"])
+
+    def test_two_editions_never_appear_in_one_list(self):
+        recs, method = recommend(self._space(), [], limit=3)
+        assert method == "none"
+        assert [r.work_id for r in recs] == [1, 3, 4]
+
+    def test_rating_one_edition_excludes_the_other(self):
+        recs, _ = recommend(self._space(), [(2, 5, False)], limit=5)
+        assert {r.work_id for r in recs} == {3, 4, 5}
+
+    def test_without_groups_every_record_is_its_own_book(self):
+        s = FactorSpace.from_rows([(1, [1.0, 0.0], 50), (2, [1.0, 0.0], 40)])
+        assert [r.work_id for r in recommend(s, [], limit=5)[0]] == [1, 2]
+
+    def test_a_full_list_is_still_returned_when_editions_crowd_the_top(self):
+        rng = np.random.default_rng(2)
+        rows = [(j, rng.normal(size=4).tolist(), 1000 - j) for j in range(60)]
+        # the 20 most-rated records are all editions of one book
+        keys = ["same"] * 20 + [str(j) for j in range(20, 60)]
+        s = FactorSpace.from_rows(rows).with_groups(keys)
+        recs, _ = recommend(s, [], limit=10)
+        assert [r.work_id for r in recs] == [0] + list(range(20, 29))
+
+    def test_editions_are_grouped_from_the_database(self, conn):
+        sid, works = _library(conn, 4)
+        conn.execute("UPDATE works SET title = 'Catching Fire', authors = '{Suzanne Collins}' "
+                     "WHERE id = ANY(%s)", (works[:2],))
+        for j, w in enumerate(works):
+            conn.execute(
+                "INSERT INTO work_factors (work_id, vector, raw_vector, dimensions, "
+                "factoriser_version, n_patrons) VALUES (%s, %s, %s, 2, 2, %s)",
+                (w, [1.0, 0.0], [1.0, 0.0], 100 - j))
+        conn.commit()
+        recs, _ = recommend_for_patron(conn, sid, "nobody", limit=4)
+        assert [r.work_id for r in recs] == [works[0], works[2], works[3]]

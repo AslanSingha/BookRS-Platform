@@ -28,6 +28,19 @@ was 0 to 0.1 at every stage and the gain at 0.1 was under a thousandth
 on P@10; it earns its place for works nobody has rated, which is a
 different question from this one.
 
+**Editions are one book.** A library often holds two records for the
+same work -- a hardback and a paperback, a reprint -- and catalogues
+them separately, as it should. To a reader they are one book: having
+rated one edition, being offered the other is a recommendation of
+something already read, and a list with both in it has one place
+wasted. So works are grouped by title and first author (``work_key``)
+and the group is what is excluded and what is counted. The records
+stay as they are; only the answer is collapsed.
+
+The evaluation (``bookrs.evaluation``) does not do this, on purpose: it
+reproduces the thesis's protocol, and the thesis scored editions as
+separate books.
+
 **This module imports numpy and psycopg only**, so the API process can
 use it without ``implicit``.
 
@@ -49,6 +62,25 @@ from bookrs.recommend.folding import FactorSpace, place_reader
 
 log = logging.getLogger("bookrs.recommend.personal")
 
+def work_key(title: str, authors) -> str:
+    """What two records must share to count as editions of one book.
+
+    The title and the first author, compared without case, accents of
+    width, or spacing. Deliberately strict: two records are merged only
+    when they agree exactly on both, so a false merge -- hiding a
+    different book -- needs two different books with the same title by
+    the same author, which a catalogue's own title rules already
+    distinguish.
+    """
+    import unicodedata
+
+    def norm(text: str) -> str:
+        return " ".join(unicodedata.normalize("NFKC", text or "").casefold().split())
+
+    first = authors[0] if authors else ""
+    return f"{norm(title)}\x1f{norm(first)}"
+
+
 METHODS = {
     "none": "most-rated works (no ratings yet)",
     "few": "placed from the rated works only (fewer than five ratings)",
@@ -63,11 +95,14 @@ class Recommendation:
 
 
 def load_space(conn, source_id: int) -> FactorSpace:
-    """The stored factors for one library's works."""
-    return FactorSpace.from_rows(conn.execute(
-        "SELECT f.work_id, f.raw_vector, f.n_patrons FROM work_factors f "
-        "JOIN works w ON w.id = f.work_id "
-        "WHERE w.source_id = %s AND w.deleted_at IS NULL", (source_id,)).fetchall())
+    """The stored factors for one library's works, editions grouped."""
+    rows = conn.execute(
+        "SELECT f.work_id, f.raw_vector, f.n_patrons, w.title, w.authors "
+        "FROM work_factors f JOIN works w ON w.id = f.work_id "
+        "WHERE w.source_id = %s AND w.deleted_at IS NULL", (source_id,)).fetchall()
+    space = FactorSpace.from_rows([r[:3] for r in rows])
+    keys = {r[0]: work_key(r[3], r[4]) for r in rows}
+    return space.with_groups([keys.get(int(w), str(w)) for w in space.work_ids])
 
 
 def load_ratings(conn, source_id: int, patron_ref: str) -> list[tuple[int, int, bool]]:
@@ -87,6 +122,8 @@ def recommend(space: FactorSpace, ratings, limit: int = 10,
     say honestly why it is showing what it shows.
     """
     rated = {int(w) for w, _, _ in ratings}
+    groups = space.groups if space.groups is not None else np.arange(len(space))
+    rated_groups = {int(groups[space.index[w]]) for w in rated if w in space.index}
     x, method = place_reader(
         {int(w): float(rating_confidence(r, 1.0 if d else 0.0)) for w, r, d in ratings},
         space, regularization)
@@ -96,17 +133,32 @@ def recommend(space: FactorSpace, ratings, limit: int = 10,
     else:
         scores = space.factors @ x
     scores = scores.astype(np.float32, copy=True)
-    for w in rated:
-        row = space.index.get(w)
-        if row is not None:
-            scores[row] = -np.inf
+    # Every edition of a book the reader rated, not only the record they
+    # rated.
+    if rated_groups:
+        scores[np.isin(groups, list(rated_groups))] = -np.inf
 
-    limit = min(limit, int(np.isfinite(scores).sum()))
-    if limit <= 0:
-        return [], method
-    top = np.argpartition(-scores, limit - 1)[:limit]
-    top = top[np.argsort(-scores[top], kind="stable")]
-    return [Recommendation(int(space.work_ids[j]), float(scores[j])) for j in top], method
+    # Best first, one record per book. Editions are few, so the top few
+    # times `limit` almost always holds enough distinct books; the full
+    # sort is the fallback, not the path.
+    finite = int(np.isfinite(scores).sum())
+    out: list[Recommendation] = []
+    taken: set[int] = set()
+    for depth in (min(finite, 4 * limit), finite):
+        if depth <= 0:
+            break
+        cand = np.argpartition(-scores, depth - 1)[:depth] if depth < len(scores) \
+            else np.arange(len(scores))
+        cand = cand[np.argsort(-scores[cand], kind="stable")]
+        out, taken = [], set()
+        for j in cand:
+            if not np.isfinite(scores[j]) or int(groups[j]) in taken:
+                continue
+            taken.add(int(groups[j]))
+            out.append(Recommendation(int(space.work_ids[j]), float(scores[j])))
+            if len(out) == limit:
+                return out, method
+    return out, method
 
 
 def recommend_for_patron(conn, source_id: int, patron_ref: str, limit: int = 10,
