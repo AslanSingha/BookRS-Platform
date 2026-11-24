@@ -1,0 +1,43 @@
+{
+  "/recommendations": {
+    "get": {
+      "x-mojo-to": "Com::BookRS::Widget::Controller#recommendations",
+      "operationId": "bookrsRecommendationsForMe",
+      "tags": ["bookrs"],
+      "summary": "Books the logged-in patron may want to read next",
+      "description": "Who the patron is comes from Koha's own authentication of this request (the OPAC session). The plugin turns the borrower number into the keyed reference BookRS-Platform stores, asks the platform server-side, and returns the list. No patron identifier is sent to or from the browser.",
+      "parameters": [
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 24,
+          "description": "How many books to return (default 10)."
+        }
+      ],
+      "produces": ["application/json"],
+      "responses": {
+        "200": {
+          "description": "Recommendations, and how they were made",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "method": {"type": "string"},
+              "explanation": {"type": "string"},
+              "ratings_used": {"type": "integer"},
+              "results": {"type": "array", "items": {"type": "object"}}
+            }
+          }
+        },
+        "400": {"description": "Bad request", "schema": {"type": "object"}},
+        "401": {"description": "Not logged in", "schema": {"type": "object"}},
+        "403": {"description": "Forbidden", "schema": {"type": "object"}},
+        "500": {"description": "Internal error", "schema": {"type": "object"}},
+        "502": {"description": "BookRS-Platform could not answer", "schema": {"type": "object"}},
+        "503": {"description": "Not configured, or no model yet", "schema": {"type": "object"}}
+      }
+    }
+  }
+}

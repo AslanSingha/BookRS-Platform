@@ -12,8 +12,11 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+import hmac
+import re
+
 import psycopg
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg_pool import ConnectionPool
 
@@ -482,3 +485,116 @@ def _collapse_editions(works):
         seen.add(key)
         out.append(w)
     return out
+
+
+# --------------------------------------------------------------------
+# Recommendations for one patron.
+#
+# Every route above answers the same way to any caller. This one does
+# not, so it is not public, and the browser never calls it.
+#
+# The library's Koha calls it, server to server, from the BookRS plugin
+# (koha-plugin/.../Widget/Controller.pm). Koha has already decided who
+# is logged in -- from the patron's own OPAC session, by its own rules --
+# and sends two things:
+#
+#   X-BookRS-Token   a secret shared by Koha and this service only, so
+#                    nothing else can ask
+#   X-BookRS-Patron  the patron's reference: the keyed hash of their
+#                    borrower number, made in Koha with the same secret
+#                    the ratings were read with
+#
+# The borrower number itself never reaches this service, and no
+# browser ever holds a patron reference: what the browser receives from
+# Koha is a list of books.
+#
+# Off unless BOOKRS_SERVICE_TOKEN is set. A deployment that has not
+# configured it answers 503 rather than serving anyone.
+# --------------------------------------------------------------------
+
+_PATRON_REF = re.compile(r"[0-9a-f]{32}")
+
+
+class _SpaceCache:
+    """Each library's factor space, rebuilt only after a refit.
+
+    Building it reads every work's factors, which is cheap for 2,000
+    works and not for 125,000; a patron's request should not pay that.
+    """
+
+    def __init__(self) -> None:
+        self._spaces: dict[int, tuple[tuple, object]] = {}
+
+    def get(self, conn: psycopg.Connection, source_id: int):
+        from bookrs.recommend.personal import load_space
+
+        stamp = tuple(conn.execute(
+            "SELECT count(*), max(f.trained_at) FROM work_factors f "
+            "JOIN works w ON w.id = f.work_id WHERE w.source_id = %s",
+            (source_id,)).fetchone())
+        if not stamp[0]:
+            return None
+        cached = self._spaces.get(source_id)
+        if cached is None or cached[0] != stamp:
+            try:
+                space = load_space(conn, source_id)
+            except ValueError:          # factors from before migration 4
+                return None
+            self._spaces[source_id] = (stamp, space)
+        return self._spaces[source_id][1]
+
+
+_spaces = _SpaceCache()
+
+
+@app.get("/patrons/me/recommendations", include_in_schema=False)
+def patron_recommendations(
+    response: Response,
+    source_id: int = Query(..., ge=1),
+    limit: int = Query(10, ge=1, le=50),
+    x_bookrs_token: str | None = Header(None),
+    x_bookrs_patron: str | None = Header(None),
+) -> dict:
+    """What one patron should read next, from their ratings in the library.
+
+    Called by Koha, not by a browser; see the comment above.
+    """
+    from bookrs.recommend.personal import METHODS, load_ratings, recommend
+
+    expected = os.environ.get("BOOKRS_SERVICE_TOKEN", "")
+    if not expected:
+        raise HTTPException(status_code=503,
+                            detail="Personal recommendations are not enabled here.")
+    if not x_bookrs_token or not hmac.compare_digest(
+            x_bookrs_token.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="Not authorised.")
+    if not x_bookrs_patron or not _PATRON_REF.fullmatch(x_bookrs_patron):
+        raise HTTPException(status_code=400,
+                            detail="X-BookRS-Patron must be a patron reference.")
+
+    # A list made for one person: no shared cache may keep it.
+    response.headers["Cache-Control"] = "no-store, private"
+
+    with pool.connection() as conn:
+        space = _spaces.get(conn, source_id)
+        if space is None:
+            raise HTTPException(
+                status_code=503,
+                detail="No recommendation model for this library yet.")
+        ratings = load_ratings(conn, source_id, x_bookrs_patron)
+        recs, method = recommend(space, ratings, limit)
+        works = [(r, queries.get_work(conn, r.work_id)) for r in recs]
+
+    results = []
+    for rec, work in works:
+        if work is None:            # withdrawn since the last refit
+            continue
+        summary = _summary(work)
+        summary["score"] = round(rec.score, 4)
+        results.append(summary)
+    return {
+        "method": method,
+        "explanation": METHODS[method],
+        "ratings_used": len(ratings),
+        "results": results,
+    }

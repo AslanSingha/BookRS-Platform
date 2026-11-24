@@ -37,6 +37,23 @@
                 <span class="hint">Overrides the widget's own headings on record pages.</span></li>
           </ol>
         </fieldset>
+        <fieldset class="rows">
+          <legend>Recommendations for the logged-in patron</legend>
+          <p>Koha works out who is logged in, turns their borrower number into the keyed reference BookRS-Platform stores, and asks the platform from this server. Patrons' browsers never see either. All three settings below must be filled in, and <b>Source id</b> above must be set.</p>
+          <ol>
+            <li><label for="internal_api_url">BookRS API URL, as this Koha server reaches it: </label>
+                <input type="url" id="internal_api_url" name="internal_api_url" size="60" value="[% internal_api_url | html %]"/>
+                <span class="hint">Server to server, so it can differ from the address above. With koha-testing-docker and BookRS on the same machine: http://host.docker.internal:8000</span></li>
+            <li><label for="service_token">Service token: </label>
+                <input type="password" id="service_token" name="service_token" size="40" autocomplete="new-password" placeholder="[% IF service_token_set %](set: leave empty to keep)[% ELSE %](not set)[% END %]"/>
+                [% IF service_token_set %]<label><input type="checkbox" name="clear_service_token" value="1"/> clear</label>[% END %]
+                <span class="hint">The same value as BOOKRS_SERVICE_TOKEN on the BookRS API.</span></li>
+            <li><label for="patron_secret">Patron secret: </label>
+                <input type="password" id="patron_secret" name="patron_secret" size="40" autocomplete="new-password" placeholder="[% IF patron_secret_set %](set: leave empty to keep)[% ELSE %](not set)[% END %]"/>
+                [% IF patron_secret_set %]<label><input type="checkbox" name="clear_patron_secret" value="1"/> clear</label>[% END %]
+                <span class="hint">The same value as BOOKRS_PATRON_SECRET when ratings were read from this Koha. A different value finds nobody's ratings.</span></li>
+          </ol>
+        </fieldset>
         <fieldset class="action"><input type="submit" class="btn btn-primary" value="Save"/></fieldset>
       </form>
     </div>

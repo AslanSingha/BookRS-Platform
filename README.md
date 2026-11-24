@@ -396,6 +396,21 @@ the per-request CSP nonce, so it keeps working where a policy is
 enforced. Clear `OPACUserJS` after installing — otherwise both loaders
 run, and only the widget's own guard stops the panel appearing twice.
 
+**Recommendations for the logged-in patron (plugin 0.2.0).** The plugin
+adds one route to Koha's own REST API,
+`/api/v1/contrib/bookrs/recommendations`. Koha decides who is asking from
+the patron's OPAC session; the plugin turns the borrower number into the
+keyed reference BookRS-Platform stores (HMAC-SHA256 with
+`BOOKRS_PATRON_SECRET`, as `bookrs/ingestion/circulation.py` computes it)
+and asks this service server to server, with `BOOKRS_SERVICE_TOKEN`. The
+borrower number never leaves Koha and no browser holds a patron
+reference. Configure three fields on the plugin's form -- the API URL as
+Koha's server reaches it, the service token, the patron secret -- and
+restart Plack so Koha registers the route
+(`koha-plack --restart kohadev`). `koha-plugin/t/controller.pl` tests
+the route without Koha; `tests/test_koha_plugin.py` runs it against this
+API.
+
 **A Koha enforcing CSP needs `connect-src` too**, not only `script-src`:
 the widget *fetches* from this service. Either add its origin to
 `csp_header_value`, or proxy the API under the OPAC's own hostname so

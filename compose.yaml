@@ -103,6 +103,11 @@ services:
       # server-side error: the panel simply never appears.
       BOOKRS_ALLOWED_ORIGINS: "${BOOKRS_ALLOWED_ORIGINS:-http://localhost:8080,http://unimarc.localhost,http://localhost:8090}"
       BOOKRS_ONNX_DIR: "/models/minilm-onnx/${BOOKRS_ONNX_VARIANT:-int8}"
+      # Shared with the Koha plugin only. Enables /patrons/me/recommendations,
+      # which Koha calls server to server for the logged-in patron; unset,
+      # that route answers 503. The API never needs BOOKRS_PATRON_SECRET:
+      # the plugin hashes the borrower number before it leaves Koha.
+      BOOKRS_SERVICE_TOKEN: "${BOOKRS_SERVICE_TOKEN:-}"
     ports:
       - "8000:8000"
     volumes:
