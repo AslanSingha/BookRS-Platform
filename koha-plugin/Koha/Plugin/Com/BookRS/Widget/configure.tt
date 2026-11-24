@@ -54,6 +54,18 @@
                 <span class="hint">The same value as BOOKRS_PATRON_SECRET when ratings were read from this Koha. A different value finds nobody's ratings.</span></li>
           </ol>
         </fieldset>
+        <fieldset class="rows">
+          <legend>OPAC pages</legend>
+          <p>The homepage panel needs nothing here: it appears on the OPAC homepage by itself (or inside an element with id <code>bookrs-home</code>, if you add one to OpacMainUserBlock to place it). The two pages below are Koha pages you create under Tools &rsaquo; Pages, each containing one placeholder; paste each page's OPAC address here so the catalogue can link to it.</p>
+          <ol>
+            <li><label for="for_you_url">"Recommended for you" page: </label>
+                <input type="text" id="for_you_url" name="for_you_url" size="60" value="[% for_you_url | html %]"/>
+                <span class="hint">A page containing &lt;div id="bookrs-for-you"&gt;&lt;/div&gt;, e.g. /cgi-bin/koha/opac-page.pl?page_id=1. Linked from the patron's account menu.</span></li>
+            <li><label for="semantic_url">"Search by meaning" page: </label>
+                <input type="text" id="semantic_url" name="semantic_url" size="60" value="[% semantic_url | html %]"/>
+                <span class="hint">A page containing &lt;div id="bookrs-semantic-search"&gt;&lt;/div&gt;. Linked from the catalogue's search results.</span></li>
+          </ol>
+        </fieldset>
         <fieldset class="action"><input type="submit" class="btn btn-primary" value="Save"/></fieldset>
       </form>
     </div>

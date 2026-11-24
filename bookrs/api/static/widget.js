@@ -69,6 +69,25 @@
   var HEADING_RELATED = script.getAttribute("data-heading-related") || "Also related by subject";
   var HEADING_CONTENT = "Related in this catalogue";
   var HEADING_BORROWED = "Readers also borrowed";
+  /* Pages for one patron, and pages that stand on their own.
+   *
+   * data-patron-route is set by the Koha plugin only when it can
+   * answer. It is Koha's own address, same origin as this page, so the
+   * patron's session goes with the request and Koha -- not this script
+   * -- decides who is asking. Nothing here ever holds a patron id.
+   *
+   * The two page URLs are Koha pages a librarian created, each holding
+   * a placeholder this script fills; set, they are linked from the
+   * account menu and the search results. */
+  var PATRON_ROUTE = script.getAttribute("data-patron-route") || "";
+  var FOR_YOU_URL = script.getAttribute("data-for-you-url") || "";
+  var SEMANTIC_URL = script.getAttribute("data-semantic-url") || "";
+  /* Lower than data-min-score on purpose: there the suggestions are
+   * unasked for and must be close; here the patron asked for a search
+   * and expects a list, ranked best first. */
+  var PAGE_MIN_SCORE = parseFloat(script.getAttribute("data-page-min-score") || "0.35");
+  var LOGIN_URL = "/cgi-bin/koha/opac-user.pl";
+  var FOR_YOU_LIMIT = 24;
   if (!API) { return; }
 
   /* Koha detail pages carry the record id in the query string. Other
@@ -172,7 +191,10 @@
     host.appendChild(panel);
   }
 
+  var styled = false;
   function style() {
+    if (styled) { return; }
+    styled = true;
     var css = document.createElement("style");
     css.textContent = [
       ".bookrs-panel{margin:1.5em 0;padding:1em 0;border-top:1px solid #ddd}",
@@ -188,7 +210,11 @@
       ".bookrs-status.in{color:#1a7f37}",
       ".bookrs-status.out{color:#8a6d00}",
       ".bookrs-credit{margin:.8em 0 0;font-size:.78em;color:#777}",
-      ".bookrs-note{margin:0 0 .75em;font-size:.9em;color:#444}"
+      ".bookrs-note{margin:0 0 .75em;font-size:.9em;color:#444}",
+      ".bookrs-more{display:inline-block;margin-top:.6em;font-size:.9em}",
+      ".bookrs-search{display:flex;gap:.5em;margin:0 0 1em;flex-wrap:wrap}",
+      ".bookrs-search-input{flex:1 1 18em;padding:.45em .6em;font-size:1em}",
+      ".bookrs-offer{margin:.5em 0;font-size:.95em}"
     ].join("");
     document.head.appendChild(css);
   }
@@ -308,8 +334,242 @@
       .catch(function () { /* silent, as everywhere else */ });
   }
 
+  function param(name) {
+    var match = window.location.search.match(new RegExp("[?&]" + name + "=([^&]*)"));
+    return match ? decodeURIComponent(match[1].replace(/\+/g, " ")) : "";
+  }
+
+  function clear(node) {
+    while (node.firstChild) { node.removeChild(node.firstChild); }
+  }
+
+  function link(text, href, className) {
+    var a = element("a", className || "bookrs-link", text);
+    a.href = href;
+    return a;
+  }
+
+  /* The patron's own list, asked of Koha with the patron's session.
+   * Resolves to the answer, or to null when nobody is logged in;
+   * rejects when the route is off or cannot answer. */
+  function mine(limit) {
+    if (!PATRON_ROUTE) { return Promise.reject(new Error("off")); }
+    return fetch(PATRON_ROUTE + "?limit=" + limit, {
+      credentials: "same-origin",
+      headers: { "Accept": "application/json" }
+    }).then(function (r) {
+      if (r.status === 401) { return null; }
+      if (!r.ok) { throw new Error("HTTP " + r.status); }
+      return r.json();
+    });
+  }
+
+  function popular(limit) {
+    var path = "/works/popular?limit=" + limit;
+    if (SOURCE_ID) { path += "&source_id=" + encodeURIComponent(SOURCE_ID); }
+    return request(path);
+  }
+
+  /* Said plainly, and only what is true: how many of the patron's own
+   * ratings the list stands on. */
+  function personalNote(data) {
+    var n = data.ratings_used || 0;
+    if (data.method === "full") { return "Based on your " + n + " ratings."; }
+    if (data.method === "few") {
+      return "Based on your " + n + (n === 1 ? " rating" : " ratings")
+           + " so far. Rate a few more books you have read and this list becomes more yours.";
+    }
+    return "You have not rated any books yet, so these are popular in this library. "
+         + "Rate books you have read and this list will be chosen for you.";
+  }
+
+  /* reason: "anonymous" (nobody logged in) or "unavailable" (the
+   * personal route is off, or could not answer). Only the first earns
+   * an invitation to log in. */
+  function personalOrPopular(limit) {
+    function fallback(reason) {
+      return popular(limit).then(function (data) {
+        return { personal: false, reason: reason, heading: "Popular in this library",
+                 note: "", results: data.results || [] };
+      });
+    }
+    return mine(limit).then(function (data) {
+      if (!data) { return fallback("anonymous"); }
+      /* Logged in but nothing rated: Koha sends the popular list. It is
+       * not this patron's, so it is not headed or credited as theirs --
+       * only the note speaks to them. */
+      var own = data.method !== "none";
+      return { personal: own, reason: own ? null : "unrated",
+               heading: own ? "Recommended for you" : "Popular in this library",
+               note: personalNote(data), results: data.results || [] };
+    }, function () { return fallback("unavailable"); });
+  }
+
+  function listPanel(view, credit, noHeading) {
+    var panel = element("div", "bookrs-panel");
+    if (!noHeading) { panel.appendChild(element("h3", "bookrs-heading", view.heading)); }
+    if (view.note) { panel.appendChild(element("p", "bookrs-note", view.note)); }
+    var list = element("ul", "bookrs-list");
+    view.results.forEach(function (work) { list.appendChild(card(work)); });
+    panel.appendChild(list);
+    panel.appendChild(element("p", "bookrs-credit", credit || (view.personal
+      ? "Chosen from your ratings in this library"
+      : "Suggestions from this library's own catalogue")));
+    return panel;
+  }
+
+  function isHomePage() {
+    var path = window.location.pathname;
+    return path === "/" || /\/opac-main\.pl$/.test(path);
+  }
+
+  /* Homepage: the patron's list when logged in, the library's popular
+   * books otherwise. At the top of the main column, or inside
+   * #bookrs-home where a library has placed one. */
+  function home() {
+    var placeholder = document.getElementById("bookrs-home");
+    var host = placeholder || document.querySelector(".maincontent")
+            || document.querySelector("#main, main") || document.body;
+    personalOrPopular(LIMIT).then(function (view) {
+      if (!view.results.length) { return; }
+      style();
+      var panel = listPanel(view);
+      if (view.personal && FOR_YOU_URL) {
+        panel.appendChild(link("More recommended for you", FOR_YOU_URL, "bookrs-more"));
+      }
+      if (placeholder) { clear(placeholder); placeholder.appendChild(panel); }
+      else { host.insertBefore(panel, host.firstChild || null); }
+    }).catch(function () { /* the homepage works without us */ });
+  }
+
+  /* The "Recommended for you" page: a Koha page holding
+   * <div id="bookrs-for-you"></div>. */
+  function forYouPage(host) {
+    personalOrPopular(FOR_YOU_LIMIT).then(function (view) {
+      style();
+      clear(host);
+      if (!view.personal && view.reason === "anonymous") {
+        var invite = element("p", "bookrs-note");
+        invite.appendChild(link("Log in", LOGIN_URL));
+        invite.appendChild(element("span", "", " to see books chosen for you from your own ratings. Until then, these are popular in this library."));
+        host.appendChild(invite);
+      }
+      /* The page's own title already says "Recommended for you"; the
+       * panel repeats a heading only when it says something else. */
+      if (view.results.length) { host.appendChild(listPanel(view, null, view.personal)); }
+      else { host.appendChild(element("p", "bookrs-note", "There are no recommendations yet.")); }
+    }).catch(function () {
+      clear(host);
+      host.appendChild(element("p", "bookrs-note", "Recommendations are not available right now."));
+    });
+  }
+
+  /* The "Search by meaning" page: a Koha page holding
+   * <div id="bookrs-semantic-search"></div>. The query travels in the
+   * address (bq), so a result page can be bookmarked or shared; the
+   * page's own parameters (page_id, code) are carried on the form so
+   * a search returns to the same page. */
+  function semanticPage(host) {
+    style();
+    clear(host);
+    var query = param("bq").replace(/^\s+|\s+$/g, "");
+
+    var form = element("form", "bookrs-search");
+    form.setAttribute("method", "get");
+    form.setAttribute("action", window.location.pathname);
+    window.location.search.replace(/^\?/, "").split("&").forEach(function (pair) {
+      if (!pair) { return; }
+      var parts = pair.split("=");
+      var name = decodeURIComponent(parts[0]);
+      if (name === "bq") { return; }
+      var hidden = element("input");
+      hidden.setAttribute("type", "hidden");
+      hidden.setAttribute("name", name);
+      hidden.setAttribute("value", decodeURIComponent((parts[1] || "").replace(/\+/g, " ")));
+      form.appendChild(hidden);
+    });
+    var input = element("input", "bookrs-search-input");
+    input.setAttribute("type", "search");
+    input.setAttribute("name", "bq");
+    input.setAttribute("value", query);
+    input.setAttribute("placeholder", "Describe the book you are looking for");
+    input.setAttribute("aria-label", "Search by meaning");
+    form.appendChild(input);
+    var button = element("button", "bookrs-search-button", "Search by meaning");
+    button.setAttribute("type", "submit");
+    form.appendChild(button);
+    host.appendChild(form);
+
+    if (query.length < 3) {
+      host.appendChild(element("p", "bookrs-note",
+        "Describe a book in your own words -- a theme, a plot, a feeling -- and the "
+        + "catalogue is searched by meaning, not by matching words."));
+      return;
+    }
+    var status = element("p", "bookrs-note", "Searching...");
+    host.appendChild(status);
+    var path = "/search/semantic?q=" + encodeURIComponent(query)
+             + "&limit=" + FOR_YOU_LIMIT + "&min_score=" + PAGE_MIN_SCORE;
+    if (SOURCE_ID) { path += "&source_id=" + encodeURIComponent(SOURCE_ID); }
+    request(path).then(function (data) {
+      var results = data.results || [];
+      /* A ranked list always has a first place, whether or not anything
+       * is near. Below the record pages' own bar for "related"
+       * (data-min-score), the best match is not called close. */
+      var best = results.length ? results[0].score : null;
+      var weak = typeof best === "number" && best < minScore();
+      status.textContent = !results.length
+        ? "Nothing in this catalogue is close in meaning to “" + query + "”."
+        : weak
+          ? "No book in this catalogue is a close match for “" + query
+            + "”. These are the nearest it has, best match first."
+          : "The " + results.length + (results.length === 1 ? " book" : " books")
+            + " in this catalogue closest in meaning to “" + query
+            + "”, best match first.";
+      if (!results.length) { return; }
+      var list = element("ul", "bookrs-list");
+      results.forEach(function (work) { list.appendChild(card(work)); });
+      host.appendChild(list);
+    }).catch(function () {
+      status.textContent = "Search by meaning is not available right now.";
+    });
+  }
+
+  /* From the catalogue's own results, a way across to the same words
+   * searched by meaning. */
+  function offerSemantic() {
+    if (!SEMANTIC_URL) { return; }
+    var query = searchQuery();
+    if (!query || query.length < 3) { return; }
+    var anchor = document.querySelector(NORESULTS_SEL)
+              || (MOUNT && document.querySelector(MOUNT)) || document.querySelector("#main, main");
+    if (!anchor) { return; }
+    style();
+    var p = element("p", "bookrs-offer");
+    p.appendChild(link("Search for “" + query + "” by meaning instead",
+      SEMANTIC_URL + (SEMANTIC_URL.indexOf("?") === -1 ? "?" : "&") + "bq=" + encodeURIComponent(query)));
+    anchor.appendChild(p);
+  }
+
+  /* The patron's account menu, on the pages that have one. */
+  function accountLink() {
+    if (!FOR_YOU_URL) { return; }
+    var menu = document.querySelector("#menu ul");
+    if (!menu) { return; }
+    var item = element("li", "bookrs-menu-item");
+    item.appendChild(link("Recommended for you", FOR_YOU_URL));
+    menu.appendChild(item);
+  }
+
   function start() {
-    if (isSearchPage()) { rescue(); return; }
+    var forYou = document.getElementById("bookrs-for-you");
+    var semantic = document.getElementById("bookrs-semantic-search");
+    accountLink();
+    if (forYou) { forYouPage(forYou); }
+    if (semantic) { semanticPage(semantic); }
+    if (forYou || semantic) { return; }
+    if (isHomePage()) { home(); return; }
+    if (isSearchPage()) { offerSemantic(); rescue(); return; }
     var id = biblionumber();
     if (!id) { return; }
 

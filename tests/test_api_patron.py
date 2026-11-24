@@ -134,3 +134,22 @@ class TestWhatComesBack:
             conn.execute("UPDATE work_factors SET raw_vector = ARRAY[0.0, 1.0]::real[] "
                          "WHERE work_id = %s", (ids[5],))
         assert _get(client, sid, limit=1).json()["results"][0]["id"] == ids[6]
+
+
+class TestPopular:
+    """What a visitor sees: public, the same for everyone."""
+
+    def test_most_rated_first_one_edition_each_no_token_needed(self, client, library, monkeypatch):
+        sid, ids = library
+        monkeypatch.delenv("BOOKRS_SERVICE_TOKEN")
+        r = client.get("/works/popular", params={"source_id": sid, "limit": 3})
+        assert r.status_code == 200
+        assert [w["id"] for w in r.json()["results"]] == [ids[10], ids[0], ids[1]]
+
+    def test_it_is_not_mistaken_for_a_work_id(self, client, library):
+        assert client.get("/works/popular", params={"source_id": library[0]}).status_code == 200
+
+    def test_a_library_without_factors_says_so(self, client, library):
+        with psycopg.connect(TEST_DATABASE_URL) as conn:
+            conn.execute("DELETE FROM work_factors")
+        assert client.get("/works/popular", params={"source_id": library[0]}).status_code == 503

@@ -66,6 +66,18 @@ scenario( 'wrong_secret', { %$good, patron_secret => 'other' },
     { 'X-Test-Borrower' => $ENV{BOOKRS_TEST_BORROWER} } );
 scenario( 'platform_down', { %$good, internal_api_url => 'http://127.0.0.1:9' }, { 'X-Test-Borrower' => 1 } );
 
+# What the plugin writes into every OPAC page, configured and not.
+for my $case (
+    [ 'opac_js_configured', { %$good, api_url => 'http://bookrs.test', for_you_url => '/cgi-bin/koha/opac-page.pl?page_id=1',
+        semantic_url => '/cgi-bin/koha/opac-page.pl?page_id=2' } ],
+    [ 'opac_js_not_personal', { api_url => 'http://bookrs.test', source_id => '54' } ],
+) {
+    %Koha::Plugins::Base::DATA = %{ $case->[1] };
+    my $tag = Koha::Plugin::Com::BookRS::Widget->new->opac_js;
+    my %attrs = $tag =~ /\s([\w-]+)="([^"]*)"/g;
+    say encode_json( { name => $case->[0], attrs => \%attrs } );
+}
+
 my $routes = Koha::Plugin::Com::BookRS::Widget->new->api_routes;
 my $to     = $routes->{'/recommendations'}{get}{'x-mojo-to'} // '';
 my ( $class, $method ) = split /#/, $to;

@@ -208,6 +208,32 @@ def health() -> dict:
     }
 
 
+# Declared before /works/{work_id}: that path matches any segment, so a
+# later declaration would never be reached.
+@app.get("/works/popular")
+def popular_works(
+    source_id: int = Query(..., ge=1),
+    limit: int = Query(10, ge=1, le=50),
+) -> dict:
+    """The works most readers of this library chose, one edition each.
+
+    What the OPAC shows someone who is not logged in, or who has rated
+    nothing yet. Public: it is the same for every caller and says
+    nothing about anyone.
+    """
+    from bookrs.recommend.personal import recommend
+
+    with pool.connection() as conn:
+        space = _spaces.get(conn, source_id)
+        if space is None:
+            raise HTTPException(
+                status_code=503,
+                detail="No recommendation model for this library yet.")
+        recs, _ = recommend(space, [], limit)
+        works = [queries.get_work(conn, r.work_id) for r in recs]
+    return {"results": [_summary(w) for w in works if w is not None]}
+
+
 @app.get("/works/{work_id}")
 def get_work(work_id: int) -> dict:
     """One work by its internal id.

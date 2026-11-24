@@ -156,3 +156,23 @@ def test_an_unreachable_platform_is_a_502(results):
 def test_the_route_is_registered_where_koha_will_look(results):
     r = results[0]["routes"]
     assert r["namespace"] == "bookrs" and r["resolves"] == 1
+
+
+def test_the_page_is_told_about_the_patron_route_only_when_it_can_answer(results):
+    on = results[0]["opac_js_configured"]["attrs"]
+    off = results[0]["opac_js_not_personal"]["attrs"]
+    assert on["data-patron-route"] == "/api/v1/contrib/bookrs/recommendations"
+    assert "data-patron-route" not in off
+
+
+def test_the_page_links_are_passed_through(results):
+    on = results[0]["opac_js_configured"]["attrs"]
+    assert on["data-for-you-url"] == "/cgi-bin/koha/opac-page.pl?page_id=1"
+    assert on["data-semantic-url"] == "/cgi-bin/koha/opac-page.pl?page_id=2"
+    assert on["src"] == "http://bookrs.test/widget.js"
+
+
+def test_no_secret_ever_reaches_the_page(results):
+    on = results[0]["opac_js_configured"]["attrs"]
+    values = " ".join(on.values())
+    assert TOKEN not in values and SECRET not in values

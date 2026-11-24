@@ -13,7 +13,7 @@ use base qw(Koha::Plugins::Base);
 use C4::Context;
 use Koha::ContentSecurityPolicy;
 
-our $VERSION = "0.2.0";
+our $VERSION = "0.3.0";
 
 our $metadata = {
     name            => 'BookRS recommendations',
@@ -31,7 +31,8 @@ our $metadata = {
                      . 'BookRS-Platform API.',
 };
 
-my @SETTINGS = qw(api_url source_id limit min_score heading internal_api_url);
+my @SETTINGS = qw(api_url source_id limit min_score heading internal_api_url
+                  for_you_url semantic_url);
 
 # Never shown back in the form, and never sent to a browser. Left
 # unchanged when the form is saved with the field empty.
@@ -85,6 +86,11 @@ sub configure {
         $new{min_score} = '0.55' unless $new{min_score} =~ /^(0(\.\d+)?|1(\.0+)?)$/;
         $new{source_id} = ''     unless $new{source_id} =~ /^\d*$/;
         $new{internal_api_url} = '' unless $new{internal_api_url} =~ m{^(https?://\S+)?$};
+        # Links to the library's own OPAC pages: a path on this OPAC, or
+        # a full address. Anything else is dropped rather than emitted.
+        for my $key (qw(for_you_url semantic_url)) {
+            $new{$key} = '' unless $new{$key} =~ m{^(/\S*|https?://\S+)?$};
+        }
         for my $key (@SECRETS) {
             my $v = $cgi->param($key) // '';
             $v =~ s/^\s+|\s+$//g;
@@ -117,6 +123,15 @@ sub _esc {
     return $s;
 }
 
+sub _personal_ready {
+    my ($self) = @_;
+    my $api = $self->retrieve_data('internal_api_url') // '';
+    return $api =~ m{^https?://}
+        && length( $self->retrieve_data('service_token') // '' )
+        && length( $self->retrieve_data('patron_secret') // '' )
+        && ( $self->retrieve_data('source_id') // '' ) =~ /^\d+$/;
+}
+
 sub opac_js {
     my ($self) = @_;
 
@@ -134,6 +149,17 @@ sub opac_js {
     push @attrs, 'data-min-score' => ( $self->retrieve_data('min_score') // '0.55' );
     my $heading = $self->retrieve_data('heading') // '';
     push @attrs, 'data-heading' => $heading if length $heading;
+
+    # The patron route is offered to the page only when it can answer:
+    # the widget then asks it, with the patron's own session, on the
+    # homepage and the "for you" page. Unconfigured, those show the
+    # library's popular books instead and never ask.
+    push @attrs, 'data-patron-route' => '/api/v1/contrib/bookrs/recommendations'
+        if $self->_personal_ready;
+    for my $pair ( [ for_you_url => 'data-for-you-url' ], [ semantic_url => 'data-semantic-url' ] ) {
+        my $v = $self->retrieve_data( $pair->[0] ) // '';
+        push @attrs, $pair->[1] => $v if length $v;
+    }
     push @attrs, 'nonce' => $nonce if length $nonce;
 
     my $tag = '<script';
