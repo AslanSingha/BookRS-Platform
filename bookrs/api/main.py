@@ -34,9 +34,29 @@ log = logging.getLogger("bookrs.api")
 pool: ConnectionPool | None = None
 
 
+def _show_info_logs() -> None:
+    """Send this service's own INFO lines to the console.
+
+    Uvicorn sets up its own loggers and nothing else, so without this
+    every log.info here -- migrations applied, the warm-up's timings,
+    the encoder loaded -- was dropped, and only warnings reached
+    `docker compose logs api` (found 26 Nov, when the warm-up's timings
+    did not appear). Only the "bookrs" loggers are touched, once.
+    """
+    ours = logging.getLogger("bookrs")
+    if not ours.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S"))
+        ours.addHandler(handler)
+    if ours.level == logging.NOTSET:
+        ours.setLevel(logging.INFO)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pool
+    _show_info_logs()
     pool = ConnectionPool(os.environ["DATABASE_URL"], min_size=1, max_size=8,
                           open=True)
 

@@ -317,6 +317,18 @@ class TestWarmStart:
             main.app.state.warm.join(timeout=10)
             assert loaded == []
 
+    def test_the_timings_reach_the_console(self, library, monkeypatch):
+        """Uvicorn configures only its own loggers. Without a handler of
+        the service's own, every INFO line -- the warm-up's timings
+        among them -- was dropped (26 Nov)."""
+        import logging
+        main = self._start(monkeypatch, lambda: None)
+        with TestClient(main.app):
+            main.app.state.warm.join(timeout=10)
+            ours = logging.getLogger("bookrs.api")
+            assert ours.isEnabledFor(logging.INFO)
+            assert logging.getLogger("bookrs").handlers
+
     def test_a_failed_warm_up_leaves_the_service_answering(self, library, monkeypatch):
         """No model files, say: the warm-up stops, the service does not,
         and the encoder is left to load on first use as before."""
