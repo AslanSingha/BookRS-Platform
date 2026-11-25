@@ -276,6 +276,74 @@ class TestSearchByMeaningPage:
         assert not any(ROUTE in r["url"] for r in out["requests"])
 
 
+SEARCH_ROUTE = "/api/v1/contrib/bookrs/search"
+
+
+def mine_search(method="full", n=40, titles=("Taste A", "Taste B"), scores=(0.70, 0.80)):
+    results = books(*titles)
+    for b, sc in zip(results, scores):
+        b["score"] = sc
+    return {"status": 200, "body": {"query": "q", "method": method, "ratings_used": n,
+                                    "count": len(results), "results": results}}
+
+
+class TestPersonalSearchPage:
+    def test_a_patrons_search_is_asked_of_koha_with_the_session(self):
+        out = run(path="/x", search="?bq=wizard+school", page=SEMANTIC,
+                  patron_search_route=SEARCH_ROUTE,
+                  routes={SEARCH_ROUTE: mine_search(), **SEARCH})
+        first = out["requests"][0]
+        assert first["url"] == SEARCH_ROUTE + "?q=wizard%20school&limit=24"
+        assert first["credentials"] == "same-origin"
+        assert not any("/search/semantic" in r["url"] for r in out["requests"])
+
+    def test_the_patrons_order_is_kept_and_said(self):
+        out = run(path="/x", search="?bq=wizard+school", page=SEMANTIC,
+                  patron_search_route=SEARCH_ROUTE, routes={SEARCH_ROUTE: mine_search(), **SEARCH})
+        holder = find(out["body"], id="bookrs-semantic-search")[0]
+        assert titles(holder) == ["Taste A", "Taste B"]
+        notes = [text(n) for n in find(holder, cls="bookrs-note")]
+        assert notes[0] == "The 2 books in this catalogue closest in meaning to “wizard school”."
+        assert notes[1] == ("Ordered by meaning and by your 40 ratings: "
+                            "books like the ones you have rated move up.")
+
+    def test_closeness_is_judged_on_the_best_score_not_the_first(self):
+        """Taste can put a weaker match first; the page must not then
+        call the whole list weak."""
+        out = run(path="/x", search="?bq=wizards", page=SEMANTIC, patron_search_route=SEARCH_ROUTE,
+                  routes={SEARCH_ROUTE: mine_search(scores=(0.40, 0.80))})
+        assert not text(find(out["body"], cls="bookrs-note")[0]).startswith("No book")
+
+    def test_a_weak_personal_search_does_not_say_best_match_first(self):
+        out = run(path="/x", search="?bq=wizards", page=SEMANTIC, patron_search_route=SEARCH_ROUTE,
+                  routes={SEARCH_ROUTE: mine_search(scores=(0.40, 0.45))})
+        status = text(find(out["body"], cls="bookrs-note")[0])
+        assert status == "No book in this catalogue is a close match for “wizards”. These are the nearest it has."
+
+    def test_books_below_the_page_floor_are_dropped_on_both_paths(self):
+        out = run(path="/x", search="?bq=wizards", page=SEMANTIC, patron_search_route=SEARCH_ROUTE,
+                  routes={SEARCH_ROUTE: mine_search(titles=("Near", "Far"), scores=(0.80, 0.10))})
+        assert titles(find(out["body"], id="bookrs-semantic-search")[0]) == ["Near"]
+
+    def test_a_patron_with_no_ratings_is_not_told_the_order_is_theirs(self):
+        out = run(path="/x", search="?bq=wizards", page=SEMANTIC, patron_search_route=SEARCH_ROUTE,
+                  routes={SEARCH_ROUTE: mine_search(method="none", n=0, scores=(0.8, 0.7))})
+        holder = find(out["body"], id="bookrs-semantic-search")[0]
+        assert not any("Ordered by" in text(n) for n in find(holder, cls="bookrs-note"))
+        assert text(find(holder, cls="bookrs-note")[0]).endswith("best match first.")
+
+    def test_a_visitor_gets_the_plain_search(self):
+        out = run(path="/x", search="?bq=wizards", page=SEMANTIC, patron_search_route=SEARCH_ROUTE,
+                  routes={SEARCH_ROUTE: {"status": 401, "body": {}}, **SEARCH})
+        assert any("/search/semantic" in r["url"] for r in out["requests"])
+        assert titles(find(out["body"], id="bookrs-semantic-search")[0]) == ["Near A", "Near B", "Near C"]
+
+    def test_a_failing_personal_search_falls_back_to_the_plain_one(self):
+        out = run(path="/x", search="?bq=wizards", page=SEMANTIC, patron_search_route=SEARCH_ROUTE,
+                  routes={SEARCH_ROUTE: {"status": 502, "body": {}}, **SEARCH})
+        assert titles(find(out["body"], id="bookrs-semantic-search")[0]) == ["Near A", "Near B", "Near C"]
+
+
 class TestLinks:
     def test_search_results_link_to_the_same_words_by_meaning(self):
         page = [{"tag": "div", "id": "numresults", "text": "Your search returned 3 results."},

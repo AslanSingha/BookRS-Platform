@@ -3,7 +3,9 @@
     "get": {
       "x-mojo-to": "Com::BookRS::Widget::Controller#recommendations",
       "operationId": "bookrsRecommendationsForMe",
-      "tags": ["bookrs"],
+      "tags": [
+        "bookrs"
+      ],
       "summary": "Books the logged-in patron may want to read next",
       "description": "Who the patron is comes from Koha's own authentication of this request (the OPAC session). The plugin turns the borrower number into the keyed reference BookRS-Platform stores, asks the platform server-side, and returns the list. No patron identifier is sent to or from the browser.",
       "parameters": [
@@ -17,26 +19,167 @@
           "description": "How many books to return (default 10)."
         }
       ],
-      "produces": ["application/json"],
+      "produces": [
+        "application/json"
+      ],
       "responses": {
         "200": {
           "description": "Recommendations, and how they were made",
           "schema": {
             "type": "object",
             "properties": {
-              "method": {"type": "string"},
-              "explanation": {"type": "string"},
-              "ratings_used": {"type": "integer"},
-              "results": {"type": "array", "items": {"type": "object"}}
+              "method": {
+                "type": "string"
+              },
+              "explanation": {
+                "type": "string"
+              },
+              "ratings_used": {
+                "type": "integer"
+              },
+              "results": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
             }
           }
         },
-        "400": {"description": "Bad request", "schema": {"type": "object"}},
-        "401": {"description": "Not logged in", "schema": {"type": "object"}},
-        "403": {"description": "Forbidden", "schema": {"type": "object"}},
-        "500": {"description": "Internal error", "schema": {"type": "object"}},
-        "502": {"description": "BookRS-Platform could not answer", "schema": {"type": "object"}},
-        "503": {"description": "Not configured, or no model yet", "schema": {"type": "object"}}
+        "400": {
+          "description": "Bad request",
+          "schema": {
+            "type": "object"
+          }
+        },
+        "401": {
+          "description": "Not logged in",
+          "schema": {
+            "type": "object"
+          }
+        },
+        "403": {
+          "description": "Forbidden",
+          "schema": {
+            "type": "object"
+          }
+        },
+        "500": {
+          "description": "Internal error",
+          "schema": {
+            "type": "object"
+          }
+        },
+        "502": {
+          "description": "BookRS-Platform could not answer",
+          "schema": {
+            "type": "object"
+          }
+        },
+        "503": {
+          "description": "Not configured, or no model yet",
+          "schema": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  },
+  "/search": {
+    "get": {
+      "x-mojo-to": "Com::BookRS::Widget::Controller#search",
+      "operationId": "bookrsSearchForMe",
+      "tags": [
+        "bookrs"
+      ],
+      "summary": "Search by meaning, ordered by the logged-in patron's ratings",
+      "description": "The same books the public search by meaning finds for these words, reordered 0.7 meaning + 0.3 the patron's taste (the thesis's weights). Identity as for /recommendations: from Koha's own authentication, never from the browser.",
+      "parameters": [
+        {
+          "name": "q",
+          "in": "query",
+          "required": true,
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 300,
+          "description": "What to search for, in the patron's words."
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 24,
+          "description": "How many books to return (default 20)."
+        }
+      ],
+      "produces": [
+        "application/json"
+      ],
+      "responses": {
+        "200": {
+          "description": "Results, and whether the order is the patron's",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "method": {
+                "type": "string"
+              },
+              "ratings_used": {
+                "type": "integer"
+              },
+              "count": {
+                "type": "integer"
+              },
+              "results": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Bad request",
+          "schema": {
+            "type": "object"
+          }
+        },
+        "401": {
+          "description": "Not logged in",
+          "schema": {
+            "type": "object"
+          }
+        },
+        "403": {
+          "description": "Forbidden",
+          "schema": {
+            "type": "object"
+          }
+        },
+        "500": {
+          "description": "Internal error",
+          "schema": {
+            "type": "object"
+          }
+        },
+        "502": {
+          "description": "BookRS-Platform could not answer",
+          "schema": {
+            "type": "object"
+          }
+        },
+        "503": {
+          "description": "Not configured, or no model yet",
+          "schema": {
+            "type": "object"
+          }
+        }
       }
     }
   }

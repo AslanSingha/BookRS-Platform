@@ -443,43 +443,55 @@ def search_semantic(
     title"; this one answers "books about this". Scores are cosine
     similarity between the query vector and each work's stored vector.
     """
-    qv = _get_encoder().encode([q])[0]
     with pool.connection() as conn:
-        v = _query_vectors.get(conn)
-        n = v.matrix.shape[0]
-        if n == 0:
-            return {"query": q, "count": 0, "results": []}
-
-        scores = v.matrix @ qv
-        mask = np.ones(n, dtype=bool)
-        if source_id is not None:
-            mask &= v.source_ids == source_id
-        if exclude_title_only:
-            mask &= ~v.title_only
-        scores = np.where(mask, scores, -np.inf)
-
-        # Over-fetch: editions of one work score near-identically and
-        # would otherwise fill the list with copies of the same book.
-        k = min(limit * 4, int(mask.sum()))
-        if k == 0:
-            return {"query": q, "count": 0, "results": []}
-        top = np.argpartition(-scores, k - 1)[:k]
-        top = top[np.argsort(-scores[top])]
-        top = [int(i) for i in top if scores[i] >= min_score]
-
-        ids = [int(v.ids[i]) for i in top]
-        score_by_id = {int(v.ids[i]): float(scores[i]) for i in top}
-        rows = conn.execute(
-            queries._SELECT + " WHERE w.id = ANY(%s) AND w.deleted_at IS NULL"
-            + queries._GROUP,
-            (ids,),
-        ).fetchall()
-
-    found = {row[0]: queries._row_to_summary(row, score=score_by_id[row[0]])
-             for row in rows}
-    ordered = _collapse_editions([found[i] for i in ids if i in found])[:limit]
+        found = _semantic_candidates(conn, q, limit * 4, source_id,
+                                     exclude_title_only, min_score)
+    # Over-fetched by four: editions of one work score near-identically
+    # and would otherwise fill the list with copies of the same book.
+    ordered = _collapse_editions(found)[:limit]
     return {"query": q, "count": len(ordered),
             "results": [_summary(w) for w in ordered]}
+
+
+def _semantic_candidates(conn, q: str, k: int, source_id: int | None = None,
+                         exclude_title_only: bool = False,
+                         min_score: float = 0.0) -> list:
+    """Up to k work summaries, best cosine first, each carrying its score.
+
+    Shared by /search/semantic and the personal search, so the two find
+    the same books for the same words and differ only in their order.
+    An empty index answers before the encoder is loaded.
+    """
+    v = _query_vectors.get(conn)
+    n = v.matrix.shape[0]
+    if n == 0:
+        return []
+    qv = _get_encoder().encode([q])[0]
+    scores = v.matrix @ qv
+    mask = np.ones(n, dtype=bool)
+    if source_id is not None:
+        mask &= v.source_ids == source_id
+    if exclude_title_only:
+        mask &= ~v.title_only
+    scores = np.where(mask, scores, -np.inf)
+
+    k = min(k, int(mask.sum()))
+    if k <= 0:
+        return []
+    top = np.argpartition(-scores, k - 1)[:k]
+    top = top[np.argsort(-scores[top])]
+    top = [int(i) for i in top if scores[i] >= min_score]
+
+    ids = [int(v.ids[i]) for i in top]
+    score_by_id = {int(v.ids[i]): float(scores[i]) for i in top}
+    rows = conn.execute(
+        queries._SELECT + " WHERE w.id = ANY(%s) AND w.deleted_at IS NULL"
+        + queries._GROUP,
+        (ids,),
+    ).fetchall()
+    found = {row[0]: queries._row_to_summary(row, score=score_by_id[row[0]])
+             for row in rows}
+    return [found[i] for i in ids if i in found]
 
 
 _ARTICLES = ("the ", "a ", "an ", "le ", "la ", "les ", "l'", "un ", "une ", "des ")
@@ -573,6 +585,19 @@ class _SpaceCache:
 _spaces = _SpaceCache()
 
 
+def _authorise_patron(token: str | None, patron: str | None) -> None:
+    """The checks every per-patron route makes before reading anything."""
+    expected = os.environ.get("BOOKRS_SERVICE_TOKEN", "")
+    if not expected:
+        raise HTTPException(status_code=503,
+                            detail="Personal recommendations are not enabled here.")
+    if not token or not hmac.compare_digest(token.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="Not authorised.")
+    if not patron or not _PATRON_REF.fullmatch(patron):
+        raise HTTPException(status_code=400,
+                            detail="X-BookRS-Patron must be a patron reference.")
+
+
 @app.get("/patrons/me/recommendations", include_in_schema=False)
 def patron_recommendations(
     response: Response,
@@ -587,17 +612,7 @@ def patron_recommendations(
     """
     from bookrs.recommend.personal import METHODS, load_ratings, recommend
 
-    expected = os.environ.get("BOOKRS_SERVICE_TOKEN", "")
-    if not expected:
-        raise HTTPException(status_code=503,
-                            detail="Personal recommendations are not enabled here.")
-    if not x_bookrs_token or not hmac.compare_digest(
-            x_bookrs_token.encode(), expected.encode()):
-        raise HTTPException(status_code=401, detail="Not authorised.")
-    if not x_bookrs_patron or not _PATRON_REF.fullmatch(x_bookrs_patron):
-        raise HTTPException(status_code=400,
-                            detail="X-BookRS-Patron must be a patron reference.")
-
+    _authorise_patron(x_bookrs_token, x_bookrs_patron)
     # A list made for one person: no shared cache may keep it.
     response.headers["Cache-Control"] = "no-store, private"
 
@@ -623,4 +638,87 @@ def patron_recommendations(
         "explanation": METHODS[method],
         "ratings_used": len(ratings),
         "results": results,
+    }
+
+
+# How many of the closest books by meaning a patron's taste may reorder.
+# Taste reorders what the words found; it never brings in a book the
+# words did not find. The thesis put it as "query intent dominates, user
+# taste re-ranks results" (BookRS-System, personalized_search).
+PERSONAL_SEARCH_POOL = 100
+# The thesis's weights: 0.7 meaning, 0.3 taste, each rescaled to 0-1.
+PERSONAL_SEARCH_TASTE = 0.3
+
+
+@app.get("/patrons/me/search", include_in_schema=False)
+def patron_search(
+    response: Response,
+    q: str = Query(..., min_length=2, max_length=300),
+    source_id: int = Query(..., ge=1),
+    limit: int = Query(20, ge=1, le=50),
+    x_bookrs_token: str | None = Header(None),
+    x_bookrs_patron: str | None = Header(None),
+) -> dict:
+    """Search by meaning, reordered by one patron's ratings.
+
+    The candidates are exactly what /search/semantic finds for the same
+    words: the PERSONAL_SEARCH_POOL closest. Each is then scored
+
+        0.7 * meaning + 0.3 * taste
+
+    with both rescaled to 0-1 across the candidates; taste is the
+    patron's vector (folding.place_reader, as for recommendations)
+    against the work's factors. A patron with no ratings, or a library
+    with no model, gets the plain meaning order and method "none", so a
+    page can say truthfully whether the order is theirs.
+
+    Each result keeps ``score``, the cosine between the words and the
+    book, so a page can still tell a close match from a distant one
+    after the order has changed.
+    """
+    from bookrs.recommend.confidence import rating_confidence
+    from bookrs.recommend.folding import place_reader
+    from bookrs.recommend.personal import load_ratings
+
+    _authorise_patron(x_bookrs_token, x_bookrs_patron)
+    response.headers["Cache-Control"] = "no-store, private"
+
+    with pool.connection() as conn:
+        found = _semantic_candidates(conn, q, PERSONAL_SEARCH_POOL, source_id)
+        ratings = load_ratings(conn, source_id, x_bookrs_patron)
+        space = _spaces.get(conn, source_id) if ratings else None
+
+    vector, method = (None, "none")
+    if space is not None:
+        vector, method = place_reader(
+            {int(w): float(rating_confidence(r, 1.0 if d else 0.0))
+             for w, r, d in ratings}, space)
+
+    if vector is not None and found:
+        meaning = np.array([w.score for w in found], dtype=np.float32)
+        taste = np.full(len(found), np.nan, dtype=np.float32)
+        for j, w in enumerate(found):
+            row = space.index.get(w.id)
+            if row is not None:
+                taste[j] = float(space.factors[row] @ vector)
+        # A book with no factors (no one has rated it) gets the lowest
+        # taste among the candidates: no evidence for it, none against.
+        taste = np.where(np.isnan(taste), np.nanmin(taste) if np.isfinite(taste).any()
+                         else 0.0, taste)
+
+        def unit(x):
+            return (x - x.min()) / (x.max() - x.min() + 1e-9)
+
+        combined = (1 - PERSONAL_SEARCH_TASTE) * unit(meaning) \
+            + PERSONAL_SEARCH_TASTE * unit(taste)
+        order = np.argsort(-combined, kind="stable")
+        found = [found[j] for j in order]
+
+    ordered = _collapse_editions(found)[:limit]
+    return {
+        "query": q,
+        "method": method,
+        "ratings_used": len(ratings),
+        "count": len(ordered),
+        "results": [_summary(w) for w in ordered],
     }

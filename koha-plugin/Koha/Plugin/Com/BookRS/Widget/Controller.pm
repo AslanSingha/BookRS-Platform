@@ -32,13 +32,39 @@ sub patron_reference {
 
 sub recommendations {
     my $c = shift->openapi->valid_input or return;
+    return _ask( $c, '/patrons/me/recommendations', { limit => _limit( $c, 10 ) },
+        'Log in to see recommendations made for you.' );
+}
+
+# Search by meaning, reordered by this patron's taste. Same identity
+# rules as above; the words go to the platform, the borrower number
+# does not.
+sub search {
+    my $c = shift->openapi->valid_input or return;
+    my $q = $c->param('q') // '';
+    $q =~ s/^\s+|\s+$//g;
+    unless ( length($q) >= 2 && length($q) <= 300 ) {
+        return $c->render( status => 400, openapi => { error => 'Say in a few words what you are looking for.' } );
+    }
+    return _ask( $c, '/patrons/me/search', { q => $q, limit => _limit( $c, 20 ) },
+        'Log in to have results ordered for you.' );
+}
+
+sub _limit {
+    my ( $c, $default ) = @_;
+    my $limit = $c->param('limit');
+    $limit = $default unless defined $limit && $limit =~ /^\d+$/;
+    $limit = 1  if $limit < 1;
+    $limit = 24 if $limit > 24;
+    return $limit;
+}
+
+sub _ask {
+    my ( $c, $path, $form, $anonymous ) = @_;
 
     my $patron = $c->stash('koha.user');
     unless ($patron) {
-        return $c->render(
-            status  => 401,
-            openapi => { error => 'Log in to see recommendations made for you.' }
-        );
+        return $c->render( status => 401, openapi => { error => $anonymous } );
     }
 
     my $plugin = Koha::Plugin::Com::BookRS::Widget->new;
@@ -55,18 +81,13 @@ sub recommendations {
         );
     }
 
-    my $limit = $c->param('limit');
-    $limit = 10 unless defined $limit && $limit =~ /^\d+$/;
-    $limit = 1  if $limit < 1;
-    $limit = 24 if $limit > 24;
-
     my $ua = Mojo::UserAgent->new( connect_timeout => 3, inactivity_timeout => 10, request_timeout => 15 );
     my $tx = $ua->get(
-        "$api/patrons/me/recommendations" => {
+        "$api$path" => {
             'X-BookRS-Token'  => $token,
             'X-BookRS-Patron' => patron_reference( $patron->borrowernumber, $secret ),
             'Accept'          => 'application/json',
-        } => form => { source_id => $source, limit => $limit }
+        } => form => { %$form, source_id => $source }
     );
 
     my $code = $tx->res->code // 0;
@@ -91,7 +112,7 @@ sub recommendations {
         my $detail = eval { $tx->res->json->{detail} } // 'Not available yet.';
         return $c->render( status => 503, openapi => { error => $detail } );
     }
-    $c->app->log->warn("BookRS: platform answered HTTP $code for a recommendations request");
+    $c->app->log->warn("BookRS: platform answered HTTP $code for $path");
     return $c->render(
         status  => 502,
         openapi => { error => 'The recommendation service refused the request.' }

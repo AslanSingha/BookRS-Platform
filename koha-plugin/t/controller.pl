@@ -33,6 +33,7 @@ under sub {
     return 1;
 };
 get '/recommendations' => sub { Koha::Plugin::Com::BookRS::Widget::Controller::recommendations(shift) };
+get '/search'          => sub { Koha::Plugin::Com::BookRS::Widget::Controller::search(shift) };
 
 my $t = Test::Mojo->new;
 app->log->level('fatal');
@@ -44,9 +45,9 @@ my $good = {
 };
 
 sub scenario {
-    my ( $name, $settings, $headers, $query ) = @_;
+    my ( $name, $settings, $headers, $query, $route ) = @_;
     %Koha::Plugins::Base::DATA = %$settings;
-    my $tx = $t->ua->get( '/recommendations' . ( $query // '' ) => $headers // {} );
+    my $tx = $t->ua->get( ( $route // '/recommendations' ) . ( $query // '' ) => $headers // {} );
     say encode_json( {
         name          => $name,
         status        => 0 + ( $tx->res->code // 0 ),
@@ -64,6 +65,10 @@ scenario( 'unconfigured', { %$good, service_token => '' }, { 'X-Test-Borrower' =
 scenario( 'wrong_token',  { %$good, service_token => 'guess' }, { 'X-Test-Borrower' => 1 } );
 scenario( 'wrong_secret', { %$good, patron_secret => 'other' },
     { 'X-Test-Borrower' => $ENV{BOOKRS_TEST_BORROWER} } );
+scenario( 'search_anonymous', $good, {}, '?q=wizards', '/search' );
+scenario( 'search_patron', $good, { 'X-Test-Borrower' => $ENV{BOOKRS_TEST_BORROWER} },
+    '?q=a%20boy%20who%20is%20a%20wizard&limit=3', '/search' );
+scenario( 'search_no_words', $good, { 'X-Test-Borrower' => $ENV{BOOKRS_TEST_BORROWER} }, '?q=%20x%20', '/search' );
 scenario( 'platform_down', { %$good, internal_api_url => 'http://127.0.0.1:9' }, { 'X-Test-Borrower' => 1 } );
 
 # What the plugin writes into every OPAC page, configured and not.

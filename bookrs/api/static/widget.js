@@ -80,6 +80,9 @@
    * a placeholder this script fills; set, they are linked from the
    * account menu and the search results. */
   var PATRON_ROUTE = script.getAttribute("data-patron-route") || "";
+  /* Same rules: Koha's address, the patron's session, set by the
+   * plugin only when it can answer. */
+  var PATRON_SEARCH_ROUTE = script.getAttribute("data-patron-search-route") || "";
   var FOR_YOU_URL = script.getAttribute("data-for-you-url") || "";
   var SEMANTIC_URL = script.getAttribute("data-semantic-url") || "";
   /* Lower than data-min-score on purpose: there the suggestions are
@@ -511,13 +514,42 @@
     var path = "/search/semantic?q=" + encodeURIComponent(query)
              + "&limit=" + FOR_YOU_LIMIT + "&min_score=" + PAGE_MIN_SCORE;
     if (SOURCE_ID) { path += "&source_id=" + encodeURIComponent(SOURCE_ID); }
-    request(path).then(function (data) {
-      var results = data.results || [];
+
+    /* A logged-in patron's search goes to Koha, which orders the same
+     * books by their ratings as well as by meaning. Anyone else, or any
+     * failure, gets the plain search by meaning. */
+    var asked = PATRON_SEARCH_ROUTE
+      ? fetch(PATRON_SEARCH_ROUTE + "?q=" + encodeURIComponent(query) + "&limit=" + FOR_YOU_LIMIT, {
+          credentials: "same-origin",
+          headers: { "Accept": "application/json" }
+        }).then(function (r) {
+          if (r.status === 401) { return null; }
+          if (!r.ok) { throw new Error("HTTP " + r.status); }
+          return r.json();
+        }).catch(function () { return null; })
+      : Promise.resolve(null);
+
+    asked.then(function (mineData) {
+      return mineData || request(path).then(function (data) {
+        return { method: "public", results: data.results || [] };
+      });
+    }).then(function (data) {
+      /* The same floor for both: the personal route returns its whole
+       * candidate pool, the public one is asked for this floor. */
+      var results = (data.results || []).filter(function (work) {
+        return typeof work.score !== "number" || work.score >= PAGE_MIN_SCORE;
+      });
       /* A ranked list always has a first place, whether or not anything
        * is near. Below the record pages' own bar for "related"
-       * (data-min-score), the best match is not called close. */
-      var best = results.length ? results[0].score : null;
+       * (data-min-score), the best match is not called close. The best
+       * is looked for across the list: a patron's order need not put
+       * the closest in meaning first. */
+      var best = null;
+      results.forEach(function (work) {
+        if (typeof work.score === "number" && (best === null || work.score > best)) { best = work.score; }
+      });
       var weak = typeof best === "number" && best < minScore();
+      var theirs = data.method === "full" || data.method === "few";
       status.textContent = !results.length
         ? "Nothing in this catalogue is close in meaning to “" + query + "”."
         : weak
@@ -527,6 +559,19 @@
             + " in this catalogue closest in meaning to “" + query
             + "”, best match first.";
       if (!results.length) { return; }
+      if (theirs) {
+        /* No longer "best match first": the patron's taste has moved
+         * books up. Say what the order is made of instead. */
+        var n = data.ratings_used || 0;
+        status.textContent = weak
+          ? "No book in this catalogue is a close match for “" + query
+            + "”. These are the nearest it has."
+          : "The " + results.length + (results.length === 1 ? " book" : " books")
+            + " in this catalogue closest in meaning to “" + query + "”.";
+        host.appendChild(element("p", "bookrs-note",
+          "Ordered by meaning and by your " + n + (n === 1 ? " rating" : " ratings")
+          + ": books like the ones you have rated move up."));
+      }
       var list = element("ul", "bookrs-list");
       results.forEach(function (work) { list.appendChild(card(work)); });
       host.appendChild(list);

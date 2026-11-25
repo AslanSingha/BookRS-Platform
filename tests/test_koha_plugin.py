@@ -176,3 +176,29 @@ def test_no_secret_ever_reaches_the_page(results):
     on = results[0]["opac_js_configured"]["attrs"]
     values = " ".join(on.values())
     assert TOKEN not in values and SECRET not in values
+
+
+def test_search_needs_a_logged_in_patron(results):
+    r = results[0]["search_anonymous"]
+    assert r["status"] == 401 and "Log in" in r["body"]["error"]
+
+
+def test_search_passes_the_words_and_the_patron_through(results):
+    """The platform echoes the words; the method shows it found the
+    patron's ratings through the Perl hash."""
+    r = results[0]["search_patron"]
+    assert r["status"] == 200, r
+    assert r["body"]["query"] == "a boy who is a wizard"
+    assert r["body"]["method"] == "few" and r["body"]["ratings_used"] == 4
+    assert r["cache_control"] == "no-store, private"
+
+
+def test_search_without_words_is_refused_before_the_platform_is_asked(results):
+    assert results[0]["search_no_words"]["status"] == 400
+
+
+def test_the_page_is_told_about_the_search_route_too(results):
+    on = results[0]["opac_js_configured"]["attrs"]
+    off = results[0]["opac_js_not_personal"]["attrs"]
+    assert on["data-patron-search-route"] == "/api/v1/contrib/bookrs/search"
+    assert "data-patron-search-route" not in off

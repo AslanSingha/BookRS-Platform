@@ -153,3 +153,91 @@ class TestPopular:
         with psycopg.connect(TEST_DATABASE_URL) as conn:
             conn.execute("DELETE FROM work_factors")
         assert client.get("/works/popular", params={"source_id": library[0]}).status_code == 503
+
+
+class _FakeEncoder:
+    """Every query means [1, 0, 0]: what is under test is the order."""
+
+    def encode(self, texts):
+        return np.array([[1.0, 0.0, 0.0]] * len(texts), dtype=np.float32)
+
+
+@pytest.fixture
+def searchable(library, client, monkeypatch):
+    """The library above, with meaning vectors.
+
+    By meaning alone the B books win (cosine .85, .84) over A6 and A7
+    (.80, .78); every other book is far. The patron rated A1-A5, so
+    taste favours group A.
+    """
+    sid, ids = library
+    near = {ids[7]: [0.85, 0.53, 0.0], ids[8]: [0.84, 0.54, 0.0],
+            ids[5]: [0.80, 0.60, 0.0], ids[6]: [0.78, 0.62, 0.0]}
+    with psycopg.connect(TEST_DATABASE_URL) as conn:
+        for w in ids:
+            conn.execute(
+                "INSERT INTO embeddings (work_id, vector, dimensions, model, "
+                "embedder_version, source_hash) VALUES (%s, %s, 3, 'test', 1, 'c')",
+                (w, near.get(w, [0.0, 0.0, 1.0])))
+    from bookrs.api import main
+    monkeypatch.setattr(main, "_get_encoder", lambda: _FakeEncoder())
+    main._query_vectors = type(main._query_vectors)()
+    return sid, ids
+
+
+def _search(client, sid, ref=REF, token=TOKEN, **params):
+    headers = {"X-BookRS-Token": token} if token else {}
+    if ref:
+        headers["X-BookRS-Patron"] = ref
+    return client.get("/patrons/me/search", params={"q": "anything", "source_id": sid, **params},
+                      headers=headers)
+
+
+class TestPersonalSearch:
+    def test_plain_search_puts_the_closest_meaning_first(self, client, searchable):
+        sid, ids = searchable
+        r = client.get("/search/semantic", params={"q": "anything", "source_id": sid, "limit": 4})
+        assert [w["id"] for w in r.json()["results"]] == [ids[7], ids[8], ids[5], ids[6]]
+
+    def test_the_patrons_taste_reorders_what_the_words_found(self, client, searchable):
+        sid, ids = searchable
+        body = _search(client, sid, limit=4).json()
+        assert body["method"] == "full" and body["ratings_used"] == 5
+        got = [w["id"] for w in body["results"]]
+        # A6 and A7 rise above both B books; between the two B books,
+        # almost tied on meaning, taste decides too.
+        assert got[:2] == [ids[5], ids[6]] and set(got[2:]) == {ids[7], ids[8]}
+
+    def test_each_result_keeps_its_closeness_in_meaning(self, client, searchable):
+        sid, ids = searchable
+        first = _search(client, sid, limit=1).json()["results"][0]
+        assert first["id"] == ids[5] and first["score"] == pytest.approx(0.80, abs=1e-4)
+
+    def test_a_patron_with_no_ratings_gets_the_plain_order_said_as_such(self, client, searchable):
+        sid, ids = searchable
+        body = _search(client, sid, ref="e" * 32, limit=4).json()
+        assert body["method"] == "none" and body["ratings_used"] == 0
+        assert [w["id"] for w in body["results"]] == [ids[7], ids[8], ids[5], ids[6]]
+
+    def test_taste_never_brings_in_a_book_the_words_did_not_find(self, client, searchable, monkeypatch):
+        from bookrs.api import main
+        sid, ids = searchable
+        monkeypatch.setattr(main, "PERSONAL_SEARCH_POOL", 2)
+        got = [w["id"] for w in _search(client, sid, limit=10).json()["results"]]
+        assert sorted(got) == sorted([ids[7], ids[8]])
+
+    def test_it_is_refused_like_every_patron_route(self, client, searchable):
+        sid, _ = searchable
+        assert _search(client, sid, token="guess").status_code == 401
+        assert _search(client, sid, ref="12345").status_code == 400
+        assert _search(client, sid).headers["cache-control"] == "no-store, private"
+
+    def test_an_empty_index_answers_without_loading_the_encoder(self, client, library, monkeypatch):
+        from bookrs.api import main
+        sid, _ = library
+        def boom():
+            raise AssertionError("encoder loaded for an empty index")
+        monkeypatch.setattr(main, "_get_encoder", boom)
+        main._query_vectors = type(main._query_vectors)()
+        body = _search(client, sid).json()
+        assert body["results"] == [] and body["method"] == "full"

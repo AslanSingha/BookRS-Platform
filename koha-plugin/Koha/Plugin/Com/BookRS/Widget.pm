@@ -13,7 +13,7 @@ use base qw(Koha::Plugins::Base);
 use C4::Context;
 use Koha::ContentSecurityPolicy;
 
-our $VERSION = "0.3.0";
+our $VERSION = "0.4.0";
 
 our $metadata = {
     name            => 'BookRS recommendations',
@@ -154,8 +154,10 @@ sub opac_js {
     # the widget then asks it, with the patron's own session, on the
     # homepage and the "for you" page. Unconfigured, those show the
     # library's popular books instead and never ask.
-    push @attrs, 'data-patron-route' => '/api/v1/contrib/bookrs/recommendations'
-        if $self->_personal_ready;
+    if ( $self->_personal_ready ) {
+        push @attrs, 'data-patron-route'        => '/api/v1/contrib/bookrs/recommendations';
+        push @attrs, 'data-patron-search-route' => '/api/v1/contrib/bookrs/search';
+    }
     for my $pair ( [ for_you_url => 'data-for-you-url' ], [ semantic_url => 'data-semantic-url' ] ) {
         my $v = $self->retrieve_data( $pair->[0] ) // '';
         push @attrs, $pair->[1] => $v if length $v;
