@@ -367,3 +367,25 @@ CREATE TABLE work_factors (
 );
 
 CREATE INDEX work_factors_version_idx ON work_factors (factoriser_version);
+
+-- ---------------------------------------------------------------------
+-- job_runs: what the built-in scheduler ran (bookrs/schedule.py).
+--
+-- One row per run. The scheduler reads it to decide when a job is next
+-- due, so a restarted container does not run everything again at once;
+-- /health reads it so a library can see that reading Koha and refitting
+-- are still happening (migration 6). finished_at NULL marks a run that
+-- was interrupted.
+-- ---------------------------------------------------------------------
+CREATE TABLE job_runs (
+    id          BIGSERIAL   PRIMARY KEY,
+    job         TEXT        NOT NULL,
+    source_id   INTEGER,
+    every       TEXT        NOT NULL,
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at TIMESTAMPTZ,
+    ok          BOOLEAN,
+    detail      TEXT
+);
+
+CREATE INDEX job_runs_job_idx ON job_runs (job, source_id, started_at DESC);

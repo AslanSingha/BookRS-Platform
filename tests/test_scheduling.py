@@ -68,17 +68,19 @@ class TestFreshnessReporting:
         assert "last_harvest" in read("bookrs/api/main.py")
 
 
-class TestNoSchedulerIsShipped:
-    """The schedule belongs to the library, on its own host, alongside
-    the cron jobs Koha already requires.
+class TestSchedulingIsDeliberate:
+    """How the schedule is run is a decision, not a drift.
 
-    A scheduler inside a container fights Docker's one-process model,
-    complicates restart semantics, and hides its failures from the
-    monitoring a library already operates. These assertions exist so
-    that adding one is a deliberate decision rather than a drift.
+    Until 26 November 2026 the platform shipped no scheduler: the schedule
+    belonged to the library's host cron. The supervisor asked for a
+    retrain cadence that can be set in hours, days or weeks, and cron does
+    not run by default where this is developed (WSL), so a scheduler was
+    added (bookrs/schedule.py). What argued for cron is held here: no
+    daemon in any image, one plain process per job, nothing running unless
+    the library starts it, and both ways documented.
     """
 
-    def test_no_scheduler_in_the_service_images(self):
+    def test_no_scheduler_daemon_in_the_service_images(self):
         for name in ("recommend.Dockerfile", "api.Dockerfile",
                      "ingestion.Dockerfile", "embedding.Dockerfile"):
             path = SOURCE / "docker" / name
@@ -88,11 +90,29 @@ class TestNoSchedulerIsShipped:
             for token in ("cron", "supervisord", "systemd"):
                 assert token not in text, f"{name} installs {token}"
 
-    def test_the_readme_documents_scheduling(self):
-        """Not shipping a scheduler is only defensible if the library is
-        told what to schedule and how often.
+    def test_the_scheduler_runs_each_job_as_a_child_process(self):
+        """The jobs' own modules, exactly as an operator would run them:
+        not imported and called inside one long-lived process."""
+        source = read("bookrs/schedule.py")
+        assert "subprocess.run" in source
+        for module in ("bookrs.ingestion.koha_db", "bookrs.ingestion.direct",
+                       "bookrs.embedding.cli", "bookrs.recommend.cli"):
+            assert f'"{module}"' in source
+            assert f"import {module}" not in source
 
-        Skipped rather than failed when the README is not present: the
+    def test_the_scheduled_services_start_only_when_asked(self):
+        """Skipped where compose.yaml is not mounted, as the README is."""
+        path = SOURCE / "compose.yaml"
+        if not path.exists():
+            pytest.skip("compose.yaml is not mounted into this environment")
+        text = path.read_text(encoding="utf-8")
+        for service in ("schedule-read", "schedule-embed", "schedule-refit"):
+            block = text.split(f"  {service}:\n", 1)[1].split("\n\n", 1)[0]
+            assert "profiles: [schedule]" in block, service
+            assert "restart: unless-stopped" in block, service
+
+    def test_the_readme_documents_both_ways_to_schedule(self):
+        """Skipped rather than failed when the README is not present: the
         test image mounts bookrs/, tests/ and docker/, and the README
         sits at the repository root. Asserting on a file the container
         cannot see tests the mount, not the documentation -- and a guard
@@ -102,6 +122,9 @@ class TestNoSchedulerIsShipped:
         path = SOURCE / "README.md"
         if not path.exists():
             pytest.skip("README.md is not mounted into this environment")
-        readme = path.read_text(encoding="utf-8").lower()
-        assert "schedul" in readme
-        assert "cron" in readme
+        readme = path.read_text(encoding="utf-8")
+        assert "--profile schedule" in readme
+        for setting in ("BOOKRS_READ_EVERY", "BOOKRS_EMBED_EVERY",
+                        "BOOKRS_REFIT_EVERY", "BOOKRS_SOURCE_ID"):
+            assert setting in readme
+        assert "cron" in readme.lower()

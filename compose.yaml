@@ -134,6 +134,79 @@ services:
       - ./bookrs:/app/bookrs:ro
       - ./tests:/app/tests:ro
 
+  # Built-in scheduler (bookrs/schedule.py). Optional: none of these
+  # starts unless the profile is asked for.
+  #
+  #   docker compose --profile schedule up -d
+  #
+  # Settings come from .env:
+  #   BOOKRS_SOURCE_ID=54
+  #   KOHA_DB_URL=mysql://<read-only user>:<password>@<koha db host>:3306/<koha db>
+  #   BOOKRS_READ_EVERY=1h   BOOKRS_EMBED_EVERY=1h   BOOKRS_REFIT_EVERY=1d
+  # A cadence is 30m, 6h, 1d, 2w or off. Each job runs in the image that
+  # carries its libraries, as one plain process; each run is recorded in
+  # job_runs and shown under "jobs" in GET /health.
+  schedule-read:
+    profiles: [schedule]
+    build:
+      context: .
+      dockerfile: docker/ingestion.Dockerfile
+    networks: [default, koha-net]
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    init: true
+    environment:
+      DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs"
+      KOHA_DB_URL: "${KOHA_DB_URL:-}"
+      BOOKRS_PATRON_SECRET: "${BOOKRS_PATRON_SECRET:-}"
+      BOOKRS_SOURCE_ID: "${BOOKRS_SOURCE_ID:-}"
+      BOOKRS_READ_EVERY: "${BOOKRS_READ_EVERY:-1h}"
+    volumes:
+      - ./bookrs:/app/bookrs:ro
+    command: ["python", "-m", "bookrs.schedule", "read"]
+
+  schedule-embed:
+    profiles: [schedule]
+    build:
+      context: .
+      dockerfile: docker/embedding.Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    environment:
+      DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}"
+      BOOKRS_SOURCE_ID: "${BOOKRS_SOURCE_ID:-}"
+      BOOKRS_EMBED_EVERY: "${BOOKRS_EMBED_EVERY:-1h}"
+    volumes:
+      - ./bookrs:/app/bookrs:ro
+      - model-cache:/app/.cache/huggingface
+    command: ["python", "-m", "bookrs.schedule", "embed"]
+
+  schedule-refit:
+    profiles: [schedule]
+    build:
+      context: .
+      dockerfile: docker/recommend.Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    environment:
+      DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs"
+      BOOKRS_SOURCE_ID: "${BOOKRS_SOURCE_ID:-}"
+      BOOKRS_REFIT_EVERY: "${BOOKRS_REFIT_EVERY:-1d}"
+    volumes:
+      - ./bookrs:/app/bookrs:ro
+    command: ["python", "-m", "bookrs.schedule", "refit"]
+
   # Test environment, not a service. Carries node for the widget
   # harness, which the service images deliberately do not — see
   # docker/test.Dockerfile.

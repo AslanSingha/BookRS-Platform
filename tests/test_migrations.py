@@ -92,6 +92,19 @@ class TestOutcome:
         """).fetchone()
         assert row == ("text", "YES")
 
+    def test_job_runs_records_what_the_scheduler_ran(self, conn):
+        """bookrs/schedule.py decides when a job is next due from it, and
+        /health shows it; an unfinished run keeps NULL in finished_at."""
+        apply_migrations(conn)
+        cols = dict(conn.execute("""
+            SELECT column_name, is_nullable FROM information_schema.columns
+            WHERE table_name = 'job_runs'
+        """).fetchall())
+        assert {"job", "source_id", "every", "started_at", "finished_at",
+                "ok", "detail"} <= set(cols)
+        assert cols["finished_at"] == "YES" and cols["ok"] == "YES"
+        assert cols["job"] == "NO" and cols["every"] == "NO"
+
     def test_factor_signal_accepts_only_known_evidence(self, conn):
         """The OPAC chooses its heading from this value. A misspelt one
         would quietly fall back to the weaker heading, so the database

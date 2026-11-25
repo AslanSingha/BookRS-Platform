@@ -272,6 +272,13 @@ def health() -> dict:
         factors, trained = conn.execute(
             "SELECT count(*), max(trained_at) FROM work_factors"
         ).fetchone()
+        # The built-in scheduler's last run of each job (bookrs/schedule.py):
+        # whether reading Koha and refitting still happen, and when next.
+        runs = conn.execute(
+            "SELECT DISTINCT ON (job, source_id) job, source_id, every, "
+            "started_at, finished_at, ok, detail "
+            "FROM job_runs ORDER BY job, source_id, started_at DESC"
+        ).fetchall()
     return {
         "status": "ok",
         "works": works,
@@ -281,6 +288,28 @@ def health() -> dict:
         "last_harvest": last.isoformat() if last else None,
         "factorised_works": factors,
         "last_factorised": trained.isoformat() if trained else None,
+        "jobs": [_job_status(*r) for r in runs],
+    }
+
+
+def _job_status(job, source_id, every, started, finished, ok, detail) -> dict:
+    from bookrs.schedule import next_due, parse_every
+
+    try:
+        cadence = parse_every(every)
+    except ValueError:
+        cadence = None
+    due = next_due((started, ok), cadence) if cadence else None
+    return {
+        "job": job,
+        "source_id": source_id,
+        "every": every,
+        "last_started": started.isoformat(),
+        "last_finished": finished.isoformat() if finished else None,
+        # None while a run is still going, or when it was interrupted.
+        "ok": ok,
+        "detail": detail,
+        "next_due": due.isoformat() if due else None,
     }
 
 

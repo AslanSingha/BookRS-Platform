@@ -434,48 +434,79 @@ library's catalogue is a support ticket.
 
 ## Keeping it up to date
 
-Four stages need to run again as a library's catalogue and circulation
-change. They run on different natural cadences, which is why they are
-four commands rather than one.
+Three jobs keep the platform in step with the library. They run on
+different natural cadences, which is why they are three jobs rather than
+one.
 
-| Stage | Command | Suggested cadence | Why |
+| Job | Commands | Suggested cadence | Why |
 |---|---|---|---|
-| Harvest | `docker compose run --rm ingestion python -m bookrs.ingestion.cli` | Nightly | Catalogue edits are frequent and the sync is cheap — only records whose bibliography actually changed are reprocessed |
-| Embed | `docker compose run --rm embedding python -m bookrs.embedding.cli` | After each harvest | Only new or changed records are encoded, so this is usually seconds |
-| Circulation | `docker compose run --rm ingestion python -m bookrs.ingestion.circulation --source-id N` | Nightly | Loans accumulate daily and the refit is only as current as its last harvest. Koha only: PMB exposes no circulation API. Requires `KOHA_REST_URL`, `KOHA_REST_USER`, `KOHA_REST_PASSWORD` and `BOOKRS_PATRON_SECRET` |
-| Refit | `docker compose run --rm recommend python -m bookrs.recommend.cli` | Weekly | A batch job whose output is meaningless in small increments — one new loan does not change the shape of a factor space |
+| `read` | `python -m bookrs.ingestion.koha_db --source-id N`, then `python -m bookrs.ingestion.direct --source-id N` (ingestion image; needs `KOHA_DB_URL` and `BOOKRS_PATRON_SECRET`) | Hourly | Reads the catalogue, then the ratings and review flags, from Koha's database, read-only. A patron's new rating counts for their own recommendations as soon as it is read: their place in the model is computed from their ratings at each request |
+| `embed` | `python -m bookrs.embedding.cli --source-id N` (embedding image) | After each read | Only new or changed records are encoded, so this is usually seconds |
+| `refit` | `python -m bookrs.recommend.cli --source-id N --signal ratings --factors 128 --iterations 10` (recommend image) | Daily or weekly | Relearns every book's factors from all ratings: everyone's results shift, including patrons who did nothing. One new rating does not change the shape of a factor space, so this needs a slower cadence than the read |
 
-Each is safe to re-run. A harvest over an unchanged catalogue reports
-everything unchanged and writes nothing; an embedding run with nothing
-stale does nothing.
+Each is safe to re-run: a read of an unchanged library writes nothing,
+and an embedding run with nothing stale does nothing.
 
-**No scheduler is included, deliberately.** The schedule belongs on the
-library's host, alongside the cron jobs Koha already requires. A cron
-daemon inside a container fights Docker's one-process-per-container
-model, complicates restart behaviour, and — most importantly — hides its
-failures from the monitoring a library already operates. A failed host
-cron job reaches the same administrator as every other failed job.
+### The built-in scheduler
 
-A worked example, adjusting the path and the times:
+`bookrs/schedule.py` runs each job on a cadence the library sets: a
+whole number and a unit (`30m`, `6h`, `1d`, `2w`), or `off`. It is
+optional and starts only with its compose profile. Set the library's
+source and the cadences in `.env`:
 
-```cron
-# BookRS-Platform — catalogue sync and model refit
-30 2 * * *  cd /opt/bookrs && docker compose run --rm ingestion python -m bookrs.ingestion.cli >> /var/log/bookrs-harvest.log 2>&1
-45 2 * * *  cd /opt/bookrs && docker compose run --rm embedding  python -m bookrs.embedding.cli  >> /var/log/bookrs-embed.log   2>&1
-15 3 * * *  cd /opt/bookrs && docker compose run --rm ingestion python -m bookrs.ingestion.circulation --source-id 1 >> /var/log/bookrs-circulation.log 2>&1
-30 3 * * 0  cd /opt/bookrs && docker compose run --rm recommend  python -m bookrs.recommend.cli  >> /var/log/bookrs-refit.log   2>&1
+```bash
+BOOKRS_SOURCE_ID=54
+KOHA_DB_URL=mysql://<read-only user>:<password>@<koha db host>:3306/<koha db>
+BOOKRS_READ_EVERY=1h
+BOOKRS_EMBED_EVERY=1h
+BOOKRS_REFIT_EVERY=1d
 ```
 
-**Check that it is still happening.** `GET /health` reports
-`last_harvest`, `last_factorised` and `factorised_works`. A refit that
-silently stops is the failure worth watching for: recommendations
+then start, follow and stop it:
+
+```bash
+docker compose --profile schedule up -d
+docker compose --profile schedule logs -f schedule-read schedule-embed schedule-refit
+docker compose --profile schedule stop schedule-read schedule-embed schedule-refit
+```
+
+Each job runs as one plain process in the image that carries its
+libraries; no daemon is installed in any image. Every run is recorded in
+the `job_runs` table. A job is due one cadence after its last run
+started, or within an hour after a run that failed or was interrupted,
+so restarting a container does not run everything again and a failed
+weekly refit is retried the same day. After changing a cadence in
+`.env`, run `docker compose --profile schedule up -d` again.
+
+### Or the host's cron
+
+A library that already monitors its cron jobs can schedule the same
+commands there instead, and leave the profile unstarted. Adjust the path,
+the source and the times:
+
+```cron
+# BookRS-Platform: read Koha, embed, refit
+5 * * * *   cd /opt/bookrs && docker compose run --rm -T ingestion sh -c 'python -m bookrs.ingestion.koha_db --source-id 54 && python -m bookrs.ingestion.direct --source-id 54' >> /var/log/bookrs-read.log 2>&1
+35 * * * *  cd /opt/bookrs && docker compose run --rm -T embedding python -m bookrs.embedding.cli --source-id 54 >> /var/log/bookrs-embed.log 2>&1
+30 3 * * *  cd /opt/bookrs && docker compose run --rm -T recommend python -m bookrs.recommend.cli --source-id 54 --signal ratings --factors 128 --iterations 10 >> /var/log/bookrs-refit.log 2>&1
+```
+
+`KOHA_DB_URL` and `BOOKRS_PATRON_SECRET` must then be in `.env` (or the
+crontab's environment) for the read.
+
+### Check that it is still happening
+
+`GET /health` reports `last_factorised` and `factorised_works`, and under
+`jobs` the built-in scheduler's last run of each job: when it started
+and finished, whether it succeeded, and when it is next due. A refit
+that silently stops is the failure worth watching for: recommendations
 continue to be served from increasingly stale factors, plausibly and
 wrongly, with nothing in the output to suggest the model has not been
 rebuilt since the catalogue doubled. Alerting on the age of
 `last_factorised` costs nothing and catches it.
 
-Before running the refit for the first time, `--dry-run` reports what
-circulation is available without touching anything.
+Before running the refit for the first time, `--dry-run` reports what it
+would learn from without touching anything.
 
 ## Running the tests
 

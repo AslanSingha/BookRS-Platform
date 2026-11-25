@@ -162,6 +162,36 @@ MIGRATIONS: tuple[Migration, ...] = (
             "CHECK (signal IN ('loans', 'ratings'))",
         ),
     ),
+    Migration(
+        version=6,
+        description="job_runs: what the built-in scheduler ran, and how it went",
+        statements=(
+            # One row per run of a scheduled job (bookrs/schedule.py). The
+            # scheduler reads it to decide when a job is next due, so a
+            # restarted container does not run everything again at once;
+            # /health reads it so a library can see that reading Koha and
+            # refitting are still happening, not only that the API is up.
+            #
+            # `every` is the cadence the run was started under, kept so
+            # /health can say when the next run is due without knowing the
+            # scheduler's settings. A row whose finished_at is NULL is a
+            # run that was interrupted: the container stopped mid-job.
+            """
+            CREATE TABLE IF NOT EXISTS job_runs (
+                id          BIGSERIAL   PRIMARY KEY,
+                job         TEXT        NOT NULL,
+                source_id   INTEGER,
+                every       TEXT        NOT NULL,
+                started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                finished_at TIMESTAMPTZ,
+                ok          BOOLEAN,
+                detail      TEXT
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS job_runs_job_idx "
+            "ON job_runs (job, source_id, started_at DESC)",
+        ),
+    ),
 )
 
 _LEDGER = """
