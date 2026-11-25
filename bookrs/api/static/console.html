@@ -283,10 +283,13 @@ function showRecommendations(work) {
       parts.push(d.count + " result" + (d.count === 1 ? "" : "s") +
                  ", scoped to " + (work.source ? work.source.name : "this source") + ".");
       if (d.collaborative_applied) {
-        parts.push(d.hybrid_count + " carry circulation evidence of their own.");
+        var evidence = d.collaborative_signal === "loans" ? "circulation"
+                     : d.collaborative_signal === "ratings" ? "rating"
+                     : "collaborative";
+        parts.push(d.hybrid_count + " carry " + evidence + " evidence of their own.");
       } else {
         parts.push("No collaborative signal: factorisation reaches only works " +
-                   "with enough co-borrowing, and the content order stands " +
+                   "with enough shared readers, and the content order stands " +
                    "unchanged for the rest.");
       }
       summary.textContent = parts.join(" ");

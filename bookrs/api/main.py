@@ -267,13 +267,14 @@ def similar(
     ),
 ) -> dict:
     """Works related to this one, by content and where possible by
-    circulation.
+    what readers did: borrowing, or rating.
 
     Every result carries the signal that produced it. "content" means
     the semantic embedding alone; a hybrid result has been re-ordered
-    by co-borrowing. collaborative_applied reports whether the blend ran
+    by the ALS factors, and collaborative_signal says what those were
+    learned from. collaborative_applied reports whether the blend ran
     at all, which on most catalogues it does not: factorisation reaches
-    only the works with enough co-borrowing to be comparable, and the
+    only the works with enough shared readers to be comparable, and the
     content order stands unchanged for the rest.
 
     Results are scoped to the querying work's own source. A deployment
@@ -287,9 +288,15 @@ def similar(
         results = queries.similar_works(conn, work_id, limit=limit,
                                         exclude_title_only=exclude_title_only,
                                         cross_source=cross_source)
+        signal = queries.FACTORS.signal(conn)
     return {
         "work_id": work_id,
         "count": len(results),
+        # What the collaborative evidence is: "loans" or "ratings", as
+        # the last refit recorded it, or null when it recorded nothing.
+        # A page that says "Readers also borrowed" needs to know which:
+        # the same factors learned from ratings make that claim false.
+        "collaborative_signal": signal,
         # Two different questions, deliberately separate.
         #
         # hybrid_count is how many of these results have collaborative

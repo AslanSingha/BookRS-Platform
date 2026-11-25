@@ -75,9 +75,12 @@ def factorise(conn: psycopg.Connection, params: ALSParams | None = None,
     # no history at all can be shown what most people chose.
     per_work = np.asarray((matrix > 0).sum(axis=0)).ravel()
 
+    # The signal is stored with every row. The OPAC names it -- "Readers
+    # also borrowed" is true of loans and false of ratings -- and a
+    # factor table cannot otherwise say which it was learned from.
     payload = [
         (work_id, factors[column].tolist(), raw[column].tolist(),
-         factors.shape[1], FACTORISER_VERSION, int(per_work[column]))
+         factors.shape[1], FACTORISER_VERSION, int(per_work[column]), signal)
         for column, work_id in enumerate(works)
     ]
 
@@ -86,8 +89,8 @@ def factorise(conn: psycopg.Connection, params: ALSParams | None = None,
         cur.executemany(
             """
             INSERT INTO work_factors (work_id, vector, raw_vector, dimensions,
-                                      factoriser_version, n_patrons)
-            VALUES (%s, %s, %s, %s, %s, %s)
+                                      factoriser_version, n_patrons, signal)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             payload,
         )

@@ -359,6 +359,7 @@ class _FactorCache:
         self._lock = threading.Lock()
         self._probe: tuple | None = None
         self._factors: dict[int, tuple[np.ndarray, int]] = {}
+        self._signal: str | None = None
 
     def get(self, conn: psycopg.Connection) -> dict[int, tuple[np.ndarray, int]]:
         probe = conn.execute(
@@ -368,7 +369,7 @@ class _FactorCache:
             if probe != self._probe:
                 rows = conn.execute(
                     """
-                    SELECT f.work_id, f.vector, f.n_patrons
+                    SELECT f.work_id, f.vector, f.n_patrons, f.signal
                     FROM work_factors f JOIN works w ON w.id = f.work_id
                     WHERE w.deleted_at IS NULL
                     """
@@ -377,8 +378,20 @@ class _FactorCache:
                     r[0]: (np.asarray(r[1], dtype=np.float32), r[2])
                     for r in rows
                 }
+                # A refit writes every row from one signal. Anything else
+                # -- rows from before migration 5, or a mixture -- says
+                # nothing reliable about what the evidence is.
+                signals = {r[3] for r in rows}
+                self._signal = signals.pop() if len(signals) == 1 else None
                 self._probe = probe
             return self._factors
+
+    def signal(self, conn: psycopg.Connection) -> str | None:
+        """What the stored factors were learned from: "loans",
+        "ratings", or None when the refit did not record it."""
+        self.get(conn)
+        with self._lock:
+            return self._signal
 
 
 FACTORS = _FactorCache()

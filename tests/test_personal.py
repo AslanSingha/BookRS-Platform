@@ -220,9 +220,12 @@ class TestAgainstTheDatabase:
         assert (stats.patrons, stats.works, stats.interactions) == (120, 24, 600)
 
         rows = conn.execute("SELECT work_id, vector, raw_vector, n_patrons, "
-                            "factoriser_version FROM work_factors").fetchall()
+                            "factoriser_version, signal FROM work_factors").fetchall()
         assert len(rows) == 24
-        for _, vector, raw, n_patrons, version in rows:
+        for _, vector, raw, n_patrons, version, signal in rows:
+            # Recorded with every row: the OPAC heads its similar books
+            # "Readers who rated this also rated" from it, not "borrowed".
+            assert signal == "ratings"
             assert version == 2 and n_patrons > 0
             assert np.linalg.norm(vector) == pytest.approx(1.0, abs=1e-5)
             assert normalise(np.array([raw], dtype=np.float32))[0] == \

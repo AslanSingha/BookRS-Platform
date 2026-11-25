@@ -196,6 +196,42 @@ class TestSimilarWorks:
         assert other in ids
 
 
+class TestFactorSignal:
+    """What the stored factors were learned from. The OPAC heads its
+    similar books by this, so a wrong answer is a false sentence on a
+    library's record page."""
+
+    def _factors(self, conn, signals):
+        for work_id, signal in zip((1, 2, 3), signals):
+            conn.execute(
+                "INSERT INTO work_factors (work_id, vector, raw_vector, dimensions, "
+                "factoriser_version, n_patrons, signal) "
+                "VALUES (%s, %s, %s, 2, 2, 5, %s)",
+                (work_id, [1.0, 0.0], [1.0, 0.0], signal))
+        conn.commit()
+
+    def test_the_recorded_signal_is_reported(self, conn):
+        from bookrs.api.queries import _FactorCache
+        self._factors(conn, ["ratings"] * 3)
+        assert _FactorCache().signal(conn) == "ratings"
+
+    def test_unrecorded_factors_report_nothing(self, conn):
+        from bookrs.api.queries import _FactorCache
+        self._factors(conn, [None] * 3)
+        assert _FactorCache().signal(conn) is None
+
+    def test_a_mixture_reports_nothing(self, conn):
+        """A refit writes every row from one signal, so a mixture is
+        not a state that says anything reliable about either."""
+        from bookrs.api.queries import _FactorCache
+        self._factors(conn, ["loans", "ratings", "ratings"])
+        assert _FactorCache().signal(conn) is None
+
+    def test_no_factors_report_nothing(self, conn):
+        from bookrs.api.queries import _FactorCache
+        assert _FactorCache().signal(conn) is None
+
+
 class TestGetWork:
     def test_returns_the_work(self, conn):
         assert get_work(conn, 1).title == "Perl best practices"

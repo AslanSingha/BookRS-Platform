@@ -13,7 +13,10 @@
  * silently rendering nothing, which is the failure mode worth avoiding.
  *
  * Usage:  node widget_harness.js '<json>'
- * where json is {attributes: {...}, results: [...]}
+ * where json is {attributes: {...}, results: [...], collaborative_signal?: ...}
+ * collaborative_signal, when present, is sent in the similar-books
+ * answer as the API sends it; when absent, the answer lacks the field,
+ * as an older API's does.
  * Prints the rendered panel as JSON.
  */
 
@@ -63,9 +66,13 @@ const document = {
 };
 
 // Resolves in FIFO order: first the record lookup, then the similar call.
+const similar = { work_id: 1, count: results.length, results: results };
+if ("collaborative_signal" in input) {
+  similar.collaborative_signal = input.collaborative_signal;
+}
 const responses = [
   { id: 1 },
-  { work_id: 1, count: results.length, results: results },
+  similar,
 ];
 function fetchStub() {
   const payload = responses.shift();

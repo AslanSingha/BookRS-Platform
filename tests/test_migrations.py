@@ -81,6 +81,34 @@ class TestOutcome:
         ).fetchone()[0]
         assert nulls == 0
 
+    def test_factor_signal_exists_and_is_nullable(self, conn):
+        """Factors refitted before migration 5 do not say what they were
+        learned from, and must not be made to claim either."""
+        apply_migrations(conn)
+        row = conn.execute("""
+            SELECT data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_name = 'work_factors' AND column_name = 'signal'
+        """).fetchone()
+        assert row == ("text", "YES")
+
+    def test_factor_signal_accepts_only_known_evidence(self, conn):
+        """The OPAC chooses its heading from this value. A misspelt one
+        would quietly fall back to the weaker heading, so the database
+        refuses it instead."""
+        apply_migrations(conn)
+        sid = conn.execute("INSERT INTO sources (name, base_url) "
+                           "VALUES ('m', 'mysql://m') RETURNING id").fetchone()[0]
+        wid = conn.execute(
+            "INSERT INTO works (source_id, source_record_id, title, content_hash, "
+            "items_hash) VALUES (%s, 'm1', 'w', 'c', 'i') RETURNING id", (sid,)
+        ).fetchone()[0]
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO work_factors (work_id, vector, dimensions, "
+                "factoriser_version, signal) "
+                "VALUES (%s, ARRAY[1.0]::real[], 1, 2, 'clicks')", (wid,))
+
 
 class TestDefinitions:
     def test_versions_are_unique(self):

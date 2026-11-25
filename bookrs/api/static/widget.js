@@ -26,12 +26,14 @@
   var API = (script.getAttribute("data-api") || "").replace(/\/$/, "");
   var SOURCE_ID = script.getAttribute("data-source-id") || "";
   var LIMIT = parseInt(script.getAttribute("data-limit") || "6", 10);
-  /* Two headings, because the panel is not always making the same
+  /* Three headings, because the panel is not always making the same
    * claim. "Readers also borrowed" is a statement about this library's
    * patrons; when no result carries circulation evidence it is simply
-   * false, and a patron cannot tell. The semantic heading is true in
-   * every case, so it is the default and the borrowing claim is earned
-   * rather than assumed.
+   * false, and a patron cannot tell. The same is true when the evidence
+   * is star ratings: the factors are then learned from what readers
+   * rated, and the heading says so. The semantic heading is true in
+   * every case, so it is the default, and either claim about readers is
+   * earned rather than assumed.
    *
    * An explicit data-heading always wins: a library that has chosen its
    * own wording knows its own catalogue. */
@@ -68,7 +70,17 @@
   var HEADING_RESCUE = script.getAttribute("data-heading-rescue") || "Closest by meaning";
   var HEADING_RELATED = script.getAttribute("data-heading-related") || "Also related by subject";
   var HEADING_CONTENT = "Related in this catalogue";
-  var HEADING_BORROWED = "Readers also borrowed";
+  /* What readers did is what the factors were learned from, which the
+   * API reports with each answer (collaborative_signal). An answer that
+   * does not name it -- an older API, or factors from a refit that did
+   * not record it -- earns neither claim. */
+  var READERS = {
+    loans: { heading: "Readers also borrowed", marker: "Borrowed together" },
+    ratings: { heading: "Readers who rated this also rated", marker: "Readers rated both" }
+  };
+  function readers(evidence) {
+    return evidence === "loans" || evidence === "ratings" ? READERS[evidence] : null;
+  }
   /* Pages for one patron, and pages that stand on their own.
    *
    * data-patron-route is set by the Koha plugin only when it can
@@ -115,7 +127,9 @@
     return node;
   }
 
-  function card(work) {
+  /* evidence: what the collaborative factors were learned from, on the
+   * record page's own panel; absent everywhere else. */
+  function card(work, evidence) {
     var item = element("li", "bookrs-item");
 
     var link = element("a", "bookrs-title", work.title || "Untitled");
@@ -126,10 +140,12 @@
       item.appendChild(element("span", "bookrs-author", work.authors[0]));
     }
 
-    /* Marked only where circulation actually backs this result. Absent
-     * on the rest, which is most of them on a sparse catalogue. */
-    if (work.signal === "hybrid") {
-      item.appendChild(element("span", "bookrs-signal", "Borrowed together"));
+    /* Marked only where readers' evidence actually backs this result,
+     * and in the words of that evidence. Absent on the rest, which is
+     * most of them on a sparse catalogue. */
+    var backed = work.signal === "hybrid" ? readers(evidence) : null;
+    if (backed) {
+      item.appendChild(element("span", "bookrs-signal", backed.marker));
     }
 
     /* Availability comes from the last catalogue sync, not a live
@@ -155,31 +171,32 @@
     return item;
   }
 
-  /* The borrowing claim holds only if every result shown carries
-   * collaborative evidence of its own. A mixed panel gets the semantic
-   * heading and marks the individual results that were borrowed
-   * together -- overclaiming on behalf of a library's patrons is worse
-   * than underclaiming. */
-  function heading(results) {
+  /* A claim about readers holds only if every result shown carries
+   * collaborative evidence of its own, and only in the words of that
+   * evidence. A mixed panel gets the semantic heading and marks the
+   * individual results that readers' evidence backs -- overclaiming on
+   * behalf of a library's patrons is worse than underclaiming. */
+  function heading(results, evidence) {
     if (HEADING) { return HEADING; }
     /* The length check is unreachable from render(), which returns
      * early on an empty list. It stays because [].every() is true, so
      * any future caller reaching heading() directly with no results
-     * would get the borrowing claim -- the strongest statement, from
+     * would get a claim about readers -- the strongest statement, from
      * the weakest evidence. */
     var all = results.length > 0 && results.every(function (work) {
       return work.signal === "hybrid";
     });
-    return all ? HEADING_BORROWED : HEADING_CONTENT;
+    var backed = all ? readers(evidence) : null;
+    return backed ? backed.heading : HEADING_CONTENT;
   }
 
-  function render(results) {
+  function render(results, evidence) {
     if (!results.length) { return; }
 
     var panel = element("div", "bookrs-panel");
-    panel.appendChild(element("h3", "bookrs-heading", heading(results)));
+    panel.appendChild(element("h3", "bookrs-heading", heading(results, evidence)));
     var list = element("ul", "bookrs-list");
-    results.forEach(function (work) { list.appendChild(card(work)); });
+    results.forEach(function (work) { list.appendChild(card(work, evidence)); });
     panel.appendChild(list);
     panel.appendChild(element("p", "bookrs-credit", "Suggestions from this library's own catalogue"));
 
@@ -627,7 +644,7 @@
       })
       .then(function (data) {
         style();
-        render(data.results || []);
+        render(data.results || [], data.collaborative_signal);
       })
       .catch(function () {
         /* Deliberately silent. The catalogue works without us. */

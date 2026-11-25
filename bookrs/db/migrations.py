@@ -141,6 +141,27 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ALTER TABLE work_factors ADD COLUMN IF NOT EXISTS raw_vector REAL[]",
         ),
     ),
+    Migration(
+        version=5,
+        description="work_factors.signal: what the factors were learned from",
+        statements=(
+            # The OPAC heads a record page's similar books "Readers also
+            # borrowed" when every result carries ALS evidence. That was
+            # true while factors came only from loans. A refit can now
+            # learn them from star ratings (--signal ratings), and the
+            # same heading over ratings claims borrowing that never
+            # happened. What the factors stand on is recorded with them,
+            # so the page can say which.
+            #
+            # Nullable: rows written before this migration do not say,
+            # and the page then claims neither, falling back to the
+            # weaker heading until the next refit records it. Recorded,
+            # not inferred: a source holding loans may still have been
+            # refitted from ratings.
+            "ALTER TABLE work_factors ADD COLUMN IF NOT EXISTS signal TEXT "
+            "CHECK (signal IN ('loans', 'ratings'))",
+        ),
+    ),
 )
 
 _LEDGER = """

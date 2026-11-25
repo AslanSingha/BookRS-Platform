@@ -325,7 +325,7 @@ CREATE INDEX loans_patron_idx ON loans (patron_ref);
 CREATE INDEX loans_matrix_idx ON loans (source_id, patron_ref, work_id);
 
 -- ---------------------------------------------------------------
--- work_factors: latent factors from circulation.
+-- work_factors: latent factors from circulation, or from ratings.
 --
 -- Item factors only. User factors would enable personalised
 -- recommendations, which need to know which patron is asking -- and
@@ -357,7 +357,13 @@ CREATE TABLE work_factors (
     -- How much evidence backs this work's factors. A work with two
     -- borrowers and one with two hundred both get a vector; the ranking
     -- layer should weigh them differently.
-    n_patrons          INTEGER     NOT NULL DEFAULT 0
+    n_patrons          INTEGER     NOT NULL DEFAULT 0,
+
+    -- What the factors were learned from: 'loans' or 'ratings'. The
+    -- OPAC names it ("Readers also borrowed" is true of one and false
+    -- of the other); NULL, on rows from before migration 5, claims
+    -- neither.
+    signal             TEXT        CHECK (signal IN ('loans', 'ratings'))
 );
 
 CREATE INDEX work_factors_version_idx ON work_factors (factoriser_version);
