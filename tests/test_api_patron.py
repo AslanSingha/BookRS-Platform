@@ -274,3 +274,59 @@ class TestPersonalSearch:
         main._query_vectors = type(main._query_vectors)()
         body = _search(client, sid).json()
         assert body["results"] == [] and body["method"] == "full"
+
+
+class TestWarmStart:
+    """The first search after a restart must not pay for loading the
+    catalogue vectors, the factor space and the encoder: the Koha plugin
+    waits ten seconds, and on 25 Nov the first patron search after a
+    restart came back without results while the next one was fine."""
+
+    def _start(self, monkeypatch, encoder):
+        from bookrs.api import main
+        monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
+        monkeypatch.setenv("BOOKRS_SERVICE_TOKEN", TOKEN)
+        monkeypatch.setattr(main, "_get_encoder", encoder)
+        main._query_vectors = type(main._query_vectors)()
+        main._spaces = main._SpaceCache()
+        return main
+
+    def _index(self, ids):
+        with psycopg.connect(TEST_DATABASE_URL) as conn:
+            for w in ids:
+                conn.execute(
+                    "INSERT INTO embeddings (work_id, vector, dimensions, model, "
+                    "embedder_version, source_hash) VALUES (%s, %s, 3, 'test', 1, 'c')",
+                    (w, [1.0, 0.0, 0.0]))
+
+    def test_the_caches_are_full_before_anyone_asks(self, library, monkeypatch):
+        sid, ids = library
+        self._index(ids)
+        loaded = []
+        main = self._start(monkeypatch, lambda: loaded.append("encoder"))
+        with TestClient(main.app):
+            main.app.state.warm.join(timeout=10)
+            assert loaded == ["encoder"]
+            assert main._query_vectors.matrix.shape[0] == len(ids)
+            assert sid in main._spaces._spaces
+
+    def test_an_empty_index_does_not_load_the_encoder(self, library, monkeypatch):
+        loaded = []
+        main = self._start(monkeypatch, lambda: loaded.append("encoder"))
+        with TestClient(main.app):
+            main.app.state.warm.join(timeout=10)
+            assert loaded == []
+
+    def test_a_failed_warm_up_leaves_the_service_answering(self, library, monkeypatch):
+        """No model files, say: the warm-up stops, the service does not,
+        and the encoder is left to load on first use as before."""
+        sid, ids = library
+        self._index(ids)
+
+        def missing():
+            raise FileNotFoundError("tokenizer.json")
+        main = self._start(monkeypatch, missing)
+        with TestClient(main.app) as c:
+            main.app.state.warm.join(timeout=10)
+            assert c.get("/works/popular", params={"source_id": sid}).status_code == 200
+            assert _get(c, sid).status_code == 200

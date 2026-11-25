@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from contextlib import asynccontextmanager
 
 import hmac
@@ -56,8 +58,62 @@ async def lifespan(app: FastAPI):
             log.info("applied schema migrations: %s",
                      ", ".join(str(v) for v in applied))
 
+    # In the background: the service answers at once, and a request that
+    # arrives while the caches fill mostly waits for the same load rather
+    # than starting its own.
+    warm = threading.Thread(target=_warm_caches, name="bookrs-warm", daemon=True)
+    warm.start()
+    app.state.warm = warm
+
     yield
+    warm.join(timeout=10)
     pool.close()
+
+
+def _warm_caches() -> None:
+    """Load at startup what the first search would otherwise load while a
+    patron waits.
+
+    A search needs every catalogue vector in memory, the query encoder
+    and the asking library's factor space; a record page needs the same
+    vectors and the factors. Each loads on first use. On 25 Nov the first
+    patron search after a restart came back without results, most likely
+    because the Koha plugin waits ten seconds for this service and that
+    first use took longer; the next search was fine. Loaded here, the
+    first search is as quick as the rest, and the log says what each part
+    took. A failure is logged and changes nothing else: whatever was not
+    loaded here loads on first use, as before.
+    """
+    started = time.monotonic()
+    try:
+        with pool.connection() as conn:
+            step = time.monotonic()
+            vectors = _query_vectors.get(conn)
+            log.info("warm: %d catalogue vectors in %.1fs",
+                     vectors.matrix.shape[0], time.monotonic() - step)
+
+            step = time.monotonic()
+            sources = [r[0] for r in conn.execute(
+                "SELECT DISTINCT w.source_id FROM work_factors f "
+                "JOIN works w ON w.id = f.work_id").fetchall()]
+            for source_id in sources:
+                _spaces.get(conn, source_id)
+            log.info("warm: factor spaces for %d sources in %.1fs",
+                     len(sources), time.monotonic() - step)
+
+            step = time.monotonic()
+            queries.VECTORS.get(conn)
+            queries.FACTORS.get(conn)
+            log.info("warm: similar-books caches in %.1fs", time.monotonic() - step)
+
+        if vectors.matrix.shape[0]:        # an empty index never needs it
+            step = time.monotonic()
+            _get_encoder()
+            log.info("warm: query encoder in %.1fs", time.monotonic() - step)
+    except Exception:
+        log.exception("warm-up stopped; whatever it did not load loads on first use")
+    else:
+        log.info("warm-up done in %.1fs", time.monotonic() - started)
 
 
 app = FastAPI(
@@ -387,9 +443,9 @@ def search_exact(
 #
 # The query encoder is an ONNX Runtime export of the same model the
 # embedding service uses, so a query vector lives in the same space as
-# the stored work vectors. It is loaded lazily on the first request and
-# kept in process: roughly a second to load, tens of milliseconds per
-# query on CPU, and no PyTorch in this image.
+# the stored work vectors. It is loaded at startup (_warm_caches), or on
+# the first request if that did not happen, and kept in process: tens of
+# milliseconds per query on CPU, and no PyTorch in this image.
 # --------------------------------------------------------------------
 import threading
 
