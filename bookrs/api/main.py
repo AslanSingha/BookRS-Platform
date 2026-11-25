@@ -249,6 +249,13 @@ def get_work(work_id: int) -> dict:
     return _summary(work)
 
 
+# Extra results asked of the ranker so that dropping editions still
+# leaves a full panel. The UCSD catalogue has 17 books in two editions
+# among 2,000 records; ten spare places cover far more than a panel of
+# six ever meets.
+SIMILAR_EDITION_SLACK = 10
+
+
 @app.get("/works/{work_id}/similar")
 def similar(
     work_id: int,
@@ -281,14 +288,27 @@ def similar(
     harvests one library, so this changes nothing there; where several
     sources share a database it prevents another library's books
     appearing under a panel that claims otherwise.
+
+    Each book appears once, as its best-ranked edition, and an edition
+    of the book the page is about never appears: the same grouping
+    (title and first author) as search and the patron's lists.
     """
     with pool.connection() as conn:
-        if queries.get_work(conn, work_id) is None:
+        probe = queries.get_work(conn, work_id)
+        if probe is None:
             raise HTTPException(status_code=404, detail="No such work")
-        results = queries.similar_works(conn, work_id, limit=limit,
-                                        exclude_title_only=exclude_title_only,
-                                        cross_source=cross_source)
+        # Asked for more than the page shows: editions of one book are
+        # separate records, and each edition dropped below makes room
+        # for the next book.
+        found = queries.similar_works(conn, work_id, limit=limit + SIMILAR_EDITION_SLACK,
+                                      exclude_title_only=exclude_title_only,
+                                      cross_source=cross_source)
         signal = queries.FACTORS.signal(conn)
+    # One book, one place: the best-ranked edition of each book, and no
+    # edition of the book the page is about (its other edition is not a
+    # similar book, it is the same one).
+    own = _canonical_key(probe)
+    results = [w for w in _collapse_editions(found) if _canonical_key(w) != own][:limit]
     return {
         "work_id": work_id,
         "count": len(results),
@@ -655,6 +675,15 @@ def patron_recommendations(
 PERSONAL_SEARCH_POOL = 100
 # The thesis's weights: 0.7 meaning, 0.3 taste, each rescaled to 0-1.
 PERSONAL_SEARCH_TASTE = 0.3
+# Taste reorders only when the words found a close match: the cosine of
+# the best candidate at least this. Below it nothing found is close, all
+# the candidates sit about equally far from the words, and the rescaled
+# 0.3 of taste would decide the order alone: on the UCSD catalogue, "the
+# art of coding" put a patron's favourite romance first, ahead of the
+# books on the craft of writing. The OPAC's own bar for a close match is
+# the same (widget.js data-min-score, 0.55); a library that changes one
+# should change both.
+PERSONAL_SEARCH_MIN_MATCH = float(os.environ.get("BOOKRS_PERSONAL_SEARCH_MIN_MATCH", 0.55))
 
 
 @app.get("/patrons/me/search", include_in_schema=False)
@@ -676,8 +705,12 @@ def patron_search(
     with both rescaled to 0-1 across the candidates; taste is the
     patron's vector (folding.place_reader, as for recommendations)
     against the work's factors. A patron with no ratings, or a library
-    with no model, gets the plain meaning order and method "none", so a
-    page can say truthfully whether the order is theirs.
+    with no model, gets the plain meaning order and method "none".
+    Words that found no close match (the best candidate below
+    PERSONAL_SEARCH_MIN_MATCH) get the plain meaning order too, whatever
+    the method: there is nothing for taste to reorder, only books taste
+    would choose on its own. ``reordered`` says whether taste changed
+    the order, so a page can say truthfully whether the order is theirs.
 
     Each result keeps ``score``, the cosine between the words and the
     book, so a page can still tell a close match from a distant one
@@ -701,7 +734,10 @@ def patron_search(
             {int(w): float(rating_confidence(r, 1.0 if d else 0.0))
              for w, r, d in ratings}, space)
 
-    if vector is not None and found:
+    reordered = False
+    close = bool(found) and max(w.score for w in found) >= PERSONAL_SEARCH_MIN_MATCH
+    if vector is not None and close:
+        reordered = True
         meaning = np.array([w.score for w in found], dtype=np.float32)
         taste = np.full(len(found), np.nan, dtype=np.float32)
         for j, w in enumerate(found):
@@ -726,6 +762,10 @@ def patron_search(
         "query": q,
         "method": method,
         "ratings_used": len(ratings),
+        # Whether the patron's taste changed the order. False for a
+        # patron with no ratings and for words that found no close
+        # match; the results are then in plain meaning order.
+        "reordered": reordered,
         "count": len(ordered),
         "results": [_summary(w) for w in ordered],
     }

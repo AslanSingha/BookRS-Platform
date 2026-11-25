@@ -226,6 +226,39 @@ class TestPersonalSearch:
         got = [w["id"] for w in _search(client, sid, limit=10).json()["results"]]
         assert sorted(got) == sorted([ids[7], ids[8]])
 
+    def test_a_close_match_is_reordered_and_says_so(self, client, searchable):
+        sid, _ = searchable
+        assert _search(client, sid, limit=4).json()["reordered"] is True
+
+    def test_words_that_found_no_close_match_keep_the_meaning_order(
+            self, client, searchable, monkeypatch):
+        """Below the bar every candidate is about as far from the words
+        as the next, and taste alone would choose the order: a failed
+        search turned into a recommendation list ("the art of coding"
+        once put a patron's favourite romance first). The plain order is
+        kept, and said to be kept; the method still says who asked."""
+        from bookrs.api import main
+        sid, ids = searchable
+        monkeypatch.setattr(main, "PERSONAL_SEARCH_MIN_MATCH", 0.9)  # best here: 0.85
+        body = _search(client, sid, limit=4).json()
+        assert body["reordered"] is False and body["method"] == "full"
+        assert [w["id"] for w in body["results"]] == [ids[7], ids[8], ids[5], ids[6]]
+
+    def test_a_patron_with_no_ratings_is_not_reordered(self, client, searchable):
+        sid, _ = searchable
+        assert _search(client, sid, ref="e" * 32, limit=4).json()["reordered"] is False
+
+    def test_taste_stops_at_the_opacs_own_bar_for_a_close_match(self):
+        """The page calls a match close at data-min-score. Were the two
+        bars apart, a page could show a list ordered by the patron's
+        ratings under "no book is a close match"."""
+        from pathlib import Path
+
+        from bookrs.api import main
+        widget = (Path(main.__file__).parent / "static" / "widget.js").read_text(encoding="utf-8")
+        assert 'getAttribute("data-min-score") || "0.55"' in widget
+        assert main.PERSONAL_SEARCH_MIN_MATCH == 0.55
+
     def test_it_is_refused_like_every_patron_route(self, client, searchable):
         sid, _ = searchable
         assert _search(client, sid, token="guess").status_code == 401

@@ -557,8 +557,9 @@
         return typeof work.score !== "number" || work.score >= PAGE_MIN_SCORE;
       });
       /* A ranked list always has a first place, whether or not anything
-       * is near. Below the record pages' own bar for "related"
-       * (data-min-score), the best match is not called close. The best
+       * is near. Below the bar the catalogue search sets before offering
+       * books unasked (data-min-score), the best match is not called
+       * close. The best
        * is looked for across the list: a patron's order need not put
        * the closest in meaning first. */
       var best = null;
@@ -566,7 +567,13 @@
         if (typeof work.score === "number" && (best === null || work.score > best)) { best = work.score; }
       });
       var weak = typeof best === "number" && best < minScore();
-      var theirs = data.method === "full" || data.method === "few";
+      /* The order is the patron's only if their taste changed it. The
+       * platform leaves a search that found no close match in plain
+       * meaning order (reordered false), and the page then says "best
+       * match first" like the public search. A platform that does not
+       * send the field is taken at its method, as before. */
+      var theirs = (data.method === "full" || data.method === "few")
+                && data.reordered !== false;
       status.textContent = !results.length
         ? "Nothing in this catalogue is close in meaning to “" + query + "”."
         : weak

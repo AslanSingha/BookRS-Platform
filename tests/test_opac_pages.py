@@ -320,6 +320,31 @@ class TestPersonalSearchPage:
         status = text(find(out["body"], cls="bookrs-note")[0])
         assert status == "No book in this catalogue is a close match for “wizards”. These are the nearest it has."
 
+    def test_a_search_taste_did_not_reorder_is_not_called_theirs(self):
+        """Words that found no close match come back in plain meaning
+        order (reordered false). The page then says "best match first",
+        as for anyone else, and not that the order is the patron's."""
+        answer = mine_search(titles=("Writing A", "Writing B"), scores=(0.45, 0.40))
+        answer["body"]["reordered"] = False
+        out = run(path="/x", search="?bq=the+art+of+coding", page=SEMANTIC,
+                  patron_search_route=SEARCH_ROUTE, routes={SEARCH_ROUTE: answer})
+        holder = find(out["body"], id="bookrs-semantic-search")[0]
+        notes = [text(n) for n in find(holder, cls="bookrs-note")]
+        assert not any("Ordered by" in n for n in notes)
+        assert notes[0] == ("No book in this catalogue is a close match for “the art of "
+                            "coding”. These are the nearest it has, best match first.")
+        assert titles(holder) == ["Writing A", "Writing B"]
+
+    def test_a_search_taste_did_reorder_is_said_to_be_theirs(self):
+        answer = mine_search()
+        answer["body"]["reordered"] = True
+        out = run(path="/x", search="?bq=wizard+school", page=SEMANTIC,
+                  patron_search_route=SEARCH_ROUTE, routes={SEARCH_ROUTE: answer})
+        notes = [text(n) for n in find(find(out["body"], id="bookrs-semantic-search")[0],
+                                        cls="bookrs-note")]
+        assert notes[1] == ("Ordered by meaning and by your 40 ratings: "
+                            "books like the ones you have rated move up.")
+
     def test_books_below_the_page_floor_are_dropped_on_both_paths(self):
         out = run(path="/x", search="?bq=wizards", page=SEMANTIC, patron_search_route=SEARCH_ROUTE,
                   routes={SEARCH_ROUTE: mine_search(titles=("Near", "Far"), scores=(0.80, 0.10))})
