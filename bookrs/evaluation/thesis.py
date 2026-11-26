@@ -97,14 +97,60 @@ class Data:
         return len(self.u)
 
 
-def load(conn, source_id: int) -> Data:
+def slice_works(conn, source_id: int, biblios_path: str) -> np.ndarray:
+    """The works of the fixture's slice, found by their Koha records.
+
+    ``koha_biblios.tsv`` (written by ``tools/ucsd_koha_load.py``) names
+    the Koha record each book of the slice became. Once the library holds
+    more than the slice -- the full catalogue, or a reader's own ratings
+    -- an evaluation given these works and the thesis's minimum of ten
+    ratings per reader sees exactly the population the slice was cut to:
+    the slice took every reader with ten or more ratings among its books,
+    and ratings on other books cannot change who that is.
+
+    Every record must be found: a slice with books missing would score a
+    different population and still print numbers.
+    """
+    bibs = set()
+    with open(biblios_path, encoding="utf-8") as fh:
+        next(fh)
+        for line in fh:
+            line = line.rstrip("\n")
+            if line:
+                bibs.add(line.split("\t")[-1])
+    by_bib = dict(conn.execute(
+        "SELECT regexp_replace(source_record_id, '^.*:', ''), id FROM works "
+        "WHERE source_id = %s AND deleted_at IS NULL", (source_id,)).fetchall())
+    missing = sorted(b for b in bibs if b not in by_bib)
+    if missing:
+        raise SystemExit(
+            f"{len(missing):,} of the {len(bibs):,} records in {biblios_path} are not "
+            f"among source {source_id}'s works (first: {', '.join(missing[:5])}). "
+            "Read the catalogue first (bookrs.ingestion.koha_db).")
+    return np.array(sorted(int(by_bib[b]) for b in bibs), dtype=np.int64)
+
+
+def load(conn, source_id: int, works: np.ndarray | None = None) -> Data:
     """Every rating for one library, sorted by (reader, work).
+
+    With ``works``, only the ratings of those works (``slice_works``).
 
     The sort is what makes a run repeatable: a database promises no
     order, and the split below is a function of the order it is given.
     """
-    n = conn.execute("SELECT count(*) FROM ratings WHERE source_id = %s",
-                     (source_id,)).fetchone()[0]
+    if works is None:
+        frm = f"ratings r WHERE r.source_id = {int(source_id)}"
+    else:
+        conn.execute("CREATE TEMP TABLE IF NOT EXISTS _eval_works "
+                     "(work_id bigint PRIMARY KEY)")
+        conn.execute("TRUNCATE _eval_works")
+        with conn.cursor() as cur:
+            with cur.copy("COPY _eval_works (work_id) FROM STDIN") as cp:
+                for wid in np.unique(np.asarray(works, dtype=np.int64)):
+                    cp.write_row((int(wid),))
+        frm = (f"ratings r JOIN _eval_works s ON s.work_id = r.work_id "
+               f"WHERE r.source_id = {int(source_id)}")
+    n = conn.execute(f"SELECT count(*) FROM {frm}").fetchone()[0]
     if not n:
         raise SystemExit(f"no ratings stored for source {source_id}. Read them "
                          "from the library first (bookrs.ingestion.direct).")
@@ -116,8 +162,7 @@ def load(conn, source_id: int) -> Data:
     k = 0
     with conn.cursor() as cur:
         with cur.copy(
-            "COPY (SELECT patron_ref, work_id, rating, reviewed FROM ratings "
-            f"WHERE source_id = {int(source_id)}) TO STDOUT"
+            f"COPY (SELECT r.patron_ref, r.work_id, r.rating, r.reviewed FROM {frm}) TO STDOUT"
         ) as copy:
             for ref, work, rating, reviewed in copy.rows():
                 u[k] = index.setdefault(ref, len(index))
@@ -405,6 +450,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="thesis_eval_users.txt from the fixture.")
     ap.add_argument("--borrower-map", default=None,
                     help="koha_borrowers.tsv from the fixture.")
+    ap.add_argument("--slice", default=None, metavar="KOHA_BIBLIOS_TSV",
+                    help="Only the fixture slice's books (koha_biblios.tsv), as "
+                         "the thesis evaluated, when the library holds more.")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
@@ -413,7 +461,8 @@ def main(argv: list[str] | None = None) -> int:
 
     t0 = time.monotonic()
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
-        data = load(conn, a.source_id)
+        data = load(conn, a.source_id,
+                    slice_works(conn, a.source_id, a.slice) if a.slice else None)
         loaded = data.n
         data = restrict(data, a.min_ratings)
         if a.no_hybrid:

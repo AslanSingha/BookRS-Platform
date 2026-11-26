@@ -40,7 +40,8 @@ from dataclasses import dataclass, replace
 import numpy as np
 from scipy.sparse import csr_matrix
 
-from bookrs.evaluation.thesis import Scores, evaluate, fit, load, restrict, split
+from bookrs.evaluation.thesis import (Scores, evaluate, fit, load, restrict,
+                                      slice_works, split)
 
 log = logging.getLogger("bookrs.evaluation")
 
@@ -132,13 +133,17 @@ def main(argv=None) -> int:
     ap.add_argument("--quick", action="store_true",
                     help="A smaller grid, for a first look (about a third of the time).")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--slice", default=None, metavar="KOHA_BIBLIOS_TSV",
+                    help="Only the fixture slice's books (koha_biblios.tsv), as "
+                         "the thesis evaluated, when the library holds more.")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 
     import psycopg
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
-        data = restrict(load(conn, a.source_id), 10)
+        data = restrict(load(conn, a.source_id,
+                                 slice_works(conn, a.source_id, a.slice) if a.slice else None), 10)
     n_readers, n_works = len(data.patrons), len(data.works)
     shape = (n_readers, n_works)
     u, i, r, d = data.u, data.i, data.r, data.d

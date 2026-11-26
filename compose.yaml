@@ -237,10 +237,32 @@ services:
       # this project deliberately does not automate. Unmounted, that
       # guard skipped, which is a guard reporting nothing.
       - ./README.md:/app/README.md:ro
+      # The fixture tools, whose planning a test checks.
+      - ./tools:/app/tools:ro
       # And compose.yaml, which a test reads for the scheduler's settings,
       # and the Koha plugin, whose Perl controller a test drives.
       - ./compose.yaml:/app/compose.yaml:ro
       - ./koha-plugin:/app/koha-plugin:ro
+
+  fixture:
+    # Fixture building: stocking the test library (Koha) with the UCSD data
+    # (tools/ucsd_full.py). Writing to Koha is what this is for, and none of
+    # the model's services can: they read the library and nothing else.
+    # Started only by name, in the "fixture" profile.
+    profiles: [fixture]
+    networks: [default, koha-net]
+    build:
+      context: .
+      dockerfile: docker/fixture.Dockerfile
+    environment:
+      KOHA_DB_URL: "${KOHA_DB_URL:-}"
+    volumes:
+      - ./tools:/app/tools:ro
+      - ./data:/app/data
+      # The UCSD sources, read-only, set in .env: DataPrep's outputs and
+      # the thesis's data folder. Nothing in this container can change them.
+      - "${UCSD_DATAPREP_DIR:-./data/ucsd}:/source/dataprep:ro"
+      - "${UCSD_THESIS_DATA_DIR:-./data/ucsd}:/source/thesis:ro"
 
 volumes:
   db-data:

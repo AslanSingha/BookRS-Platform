@@ -61,14 +61,14 @@ def _modules(cmds):
 
 
 class TestWhatEachJobRuns:
-    def test_read_is_the_catalogue_then_the_ratings_changed_since(self):
+    def test_read_is_the_catalogue_then_the_ratings_each_changed_since(self):
         cmds = commands("read", 54)
         assert _modules(cmds) == ["bookrs.ingestion.koha_db", "bookrs.ingestion.direct"]
-        assert cmds[0][-2:] == ["--source-id", "54"]
-        assert cmds[1][-5:] == ["--source-id", "54", "--changes", "--full-every", "1d"]
+        for cmd in cmds:
+            assert cmd[-5:] == ["--source-id", "54", "--changes", "--full-every", "1d"]
 
     def test_how_often_the_read_is_a_full_one_can_be_set(self):
-        assert commands("read", 54, full_every="6h")[1][-1] == "6h"
+        assert [c[-1] for c in commands("read", 54, full_every="6h")] == ["6h", "6h"]
 
     def test_a_bad_full_read_cadence_is_refused(self, monkeypatch):
         monkeypatch.setenv("BOOKRS_FULL_READ_EVERY", "nightly")

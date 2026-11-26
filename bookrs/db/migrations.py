@@ -211,6 +211,24 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ALTER TABLE sources ADD COLUMN IF NOT EXISTS ratings_full_read_at TIMESTAMPTZ",
         ),
     ),
+    Migration(
+        version=8,
+        description="sources: where the last catalogue read reached; items: collection code",
+        statements=(
+            # The catalogue's counterpart of migration 7. A read of changes
+            # (bookrs.ingestion.koha_db --changes) asks Koha for records
+            # whose record, publication details or copies were stamped
+            # since; a catalogue of 883,000 records is too large to read
+            # whole every ten minutes.
+            "ALTER TABLE sources ADD COLUMN IF NOT EXISTS catalogue_watermark TIMESTAMP",
+            # When the last full catalogue read finished: the only read that
+            # sees a record removed from Koha, and marks it deleted here.
+            "ALTER TABLE sources ADD COLUMN IF NOT EXISTS catalogue_full_read_at TIMESTAMPTZ",
+            # Koha's items.ccode: where a library records genre on the
+            # shelf, and where the UCSD fixture put the thesis's genres.
+            "ALTER TABLE items ADD COLUMN IF NOT EXISTS collection VARCHAR(80)",
+        ),
+    ),
 )
 
 _LEDGER = """

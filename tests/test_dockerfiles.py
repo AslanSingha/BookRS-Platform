@@ -91,8 +91,32 @@ def test_test_image_can_run_the_koha_plugins_perl():
 
 def test_the_test_service_mounts_what_its_tests_read():
     """A guard whose subject is not mounted skips, and reports nothing."""
+    import re
     compose = (DOCKER.parent / "compose.yaml").read_text(encoding="utf-8")
-    test_service = compose.split("\n  test:\n", 1)[1].split("\nvolumes:", 1)[0]
+    rest = compose.split("\n  test:\n", 1)[1]
+    # Up to the next service or top-level key, not into another service's
+    # mounts.
+    test_service = re.split(r"\n(?:  [a-z][\w-]*:|[a-z][\w-]*:)\n", rest, maxsplit=1)[0]
     for mount in ("./bookrs:", "./tests:", "./docker:", "./README.md:",
-                  "./compose.yaml:", "./koha-plugin:"):
+                  "./compose.yaml:", "./koha-plugin:", "./tools:"):
         assert mount in test_service, mount
+
+
+def test_the_fixture_image_is_not_a_service_image():
+    """The packages that write to Koha stay in the fixture image: no
+    service the model runs in is built from it, and the service that uses
+    it starts only by name."""
+    compose = (DOCKER.parent / "compose.yaml").read_text(encoding="utf-8")
+    fixture = compose.split("\n  fixture:\n", 1)[1].split("\n\n", 1)[0]
+    assert "profiles: [fixture]" in fixture
+    assert compose.count("dockerfile: docker/fixture.Dockerfile") == 1
+    for name in ("api", "embedding", "ingestion", "recommend"):
+        text = (DOCKER / f"{name}.Dockerfile").read_text(encoding="utf-8")
+        assert "requirements-fixture" not in text, name
+
+
+def test_the_fixture_sources_are_mounted_read_only():
+    compose = (DOCKER.parent / "compose.yaml").read_text(encoding="utf-8")
+    fixture = compose.split("\n  fixture:\n", 1)[1].split("\n\n", 1)[0]
+    for target in ("/source/dataprep:ro", "/source/thesis:ro", "/app/tools:ro"):
+        assert target in fixture, target

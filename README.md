@@ -440,7 +440,7 @@ one.
 
 | Job | Commands | Suggested cadence | Why |
 |---|---|---|---|
-| `read` | `python -m bookrs.ingestion.koha_db --source-id N`, then `python -m bookrs.ingestion.direct --source-id N --changes --full-every 1d` (ingestion image; needs `KOHA_DB_URL` and `BOOKRS_PATRON_SECRET`) | Every 10 minutes | Reads the catalogue, then the ratings and review flags changed since the last read, from Koha's database, read-only; the ratings part takes seconds. Once a day it reads everything instead (12 minutes for 16 million ratings), which also catches ratings and reviews that were removed. A patron's new rating counts for their own recommendations as soon as it is read: their place in the model is computed from their ratings at each request |
+| `read` | `python -m bookrs.ingestion.koha_db --source-id N --changes --full-every 1d`, then `python -m bookrs.ingestion.direct --source-id N --changes --full-every 1d` (ingestion image; needs `KOHA_DB_URL` and `BOOKRS_PATRON_SECRET`) | Every 10 minutes | Reads the catalogue records, then the ratings and review flags, changed since the last read, from Koha's database, read-only: seconds. Once a day each reads everything instead (12 minutes for 16 million ratings), which is the only read that sees a record, rating or review that was removed. A patron's new rating counts for their own recommendations as soon as it is read: their place in the model is computed from their ratings at each request |
 | `embed` | `python -m bookrs.embedding.cli --source-id N` (embedding image) | After each read | Only new or changed records are encoded, so this is usually seconds |
 | `refit` | `python -m bookrs.recommend.cli --source-id N --signal ratings --factors 128 --iterations 10` (recommend image) | Daily or weekly | Relearns every book's factors from all ratings: everyone's results shift, including patrons who did nothing. One new rating does not change the shape of a factor space, so this needs a slower cadence than the read |
 
@@ -495,6 +495,51 @@ one cadence after it. Two runs of one job never overlap: `--now` waits
 for a run in progress to finish first, and a scheduled run that finds
 one started by hand looks again a minute later.
 
+### The full UCSD catalogue (fixture)
+
+The test library starts as the thesis's 2,000-book slice. `tools/ucsd_full.py`
+extends it, in place, to the thesis's whole catalogue after its entity
+resolution: 883,468 books, 666,085 readers and the 29.9 million ratings on
+those books. What is already in Koha stays; only what is new is added, and
+every count is checked. It runs in the `fixture` container, the only one
+whose work writes to Koha. Set where the sources are, in `.env` (absolute
+paths; both are mounted read-only):
+
+```bash
+UCSD_DATAPREP_DIR=/home/<you>/projects/BookRS-DataPrep/outputs
+UCSD_THESIS_DATA_DIR=/home/<you>/projects/BookRS-System/data
+```
+
+```bash
+docker compose --profile schedule stop schedule-read schedule-embed schedule-refit
+docker compose --profile fixture build fixture
+docker compose --profile fixture run --rm fixture python tools/ucsd_full.py prepare
+docker compose --profile fixture run --rm fixture python tools/ucsd_full.py marc
+
+# Import each chunk into Koha without indexing; one full reindex at the end.
+for f in data/ucsd-full/marc/ucsd-full-*.mrc; do
+  n=$(basename "$f" .mrc); [ -f "data/ucsd-full/marc/$n.done" ] && continue
+  echo "== $n $(date +%T)"
+  docker cp "$f" "kohadev-koha-1:/tmp/$n.mrc" &&
+  docker exec kohadev-koha-1 koha-shell kohadev -c \
+    "perl /kohadevbox/koha/misc/migration_tools/bulkmarcimport.pl -b -file /tmp/$n.mrc --commit 1000 -si" \
+    > "data/ucsd-full/marc/$n.log" 2>&1 &&
+  docker exec kohadev-koha-1 rm -f "/tmp/$n.mrc" && touch "data/ucsd-full/marc/$n.done" ||
+  { echo "stopped at $n: see data/ucsd-full/marc/$n.log"; break; }
+done
+docker exec kohadev-koha-1 koha-rebuild-zebra -b -f -v kohadev
+
+docker compose --profile fixture run --rm fixture python tools/ucsd_full.py load --check
+docker compose --profile fixture run --rm fixture python tools/ucsd_full.py load
+```
+
+Never pass `-d` to `bulkmarcimport.pl`: it deletes every record in Koha
+first. A chunk that stopped part-way is not imported again (its first
+records would be doubled): `ucsd_full.py marc --missing-only` writes the
+books Koha does not hold yet into `data/ucsd-full/marc-missing/`, and those
+are imported the same way. `load --undo` removes the borrowers, ratings
+and review flags `load` added; the records stay.
+
 ### Seeing it update
 
 What a patron sees changes as the library's data does, and nothing has
@@ -526,7 +571,7 @@ the source and the times:
 
 ```cron
 # BookRS-Platform: read Koha, embed, refit
-*/10 * * * * cd /opt/bookrs && docker compose run --rm -T ingestion sh -c 'python -m bookrs.ingestion.koha_db --source-id 54 && python -m bookrs.ingestion.direct --source-id 54 --changes --full-every 1d' >> /var/log/bookrs-read.log 2>&1
+*/10 * * * * cd /opt/bookrs && docker compose run --rm -T ingestion sh -c 'python -m bookrs.ingestion.koha_db --source-id 54 --changes --full-every 1d && python -m bookrs.ingestion.direct --source-id 54 --changes --full-every 1d' >> /var/log/bookrs-read.log 2>&1
 35 * * * *  cd /opt/bookrs && docker compose run --rm -T embedding python -m bookrs.embedding.cli --source-id 54 >> /var/log/bookrs-embed.log 2>&1
 30 3 * * *  cd /opt/bookrs && docker compose run --rm -T recommend python -m bookrs.recommend.cli --source-id 54 --signal ratings --factors 128 --iterations 10 >> /var/log/bookrs-refit.log 2>&1
 ```

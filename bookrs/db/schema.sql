@@ -57,6 +57,11 @@ CREATE TABLE sources (
     -- When the last full ratings read finished. A read of changes cannot
     -- see removals; --full-every reads everything once this is old enough.
     ratings_full_read_at TIMESTAMPTZ,
+    -- The same two for the catalogue (migration 8): a read of changes asks
+    -- for records, publication details or copies stamped since; only a
+    -- full read sees a record removed, and marks it deleted.
+    catalogue_watermark    TIMESTAMP,
+    catalogue_full_read_at TIMESTAMPTZ,
     UNIQUE (base_url, metadata_prefix)
 );
 
@@ -170,6 +175,9 @@ CREATE TABLE items (
     -- 952$l, cumulative issues. MARC21 only: Koha's default UNIMARC
     -- framework does not map it (docs section 10.8).
     issue_count    INTEGER,
+    -- Koha's items.ccode: where a library records genre on the shelf
+    -- (migration 8). The UCSD fixture puts the thesis's genres there.
+    collection     VARCHAR(80),
     last_seen      TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 

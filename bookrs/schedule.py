@@ -7,11 +7,12 @@
 
 Three jobs keep the platform in step with the library:
 
-* ``read``  -- the catalogue (``bookrs.ingestion.koha_db``), then the
-  ratings and review flags changed since the last read
-  (``bookrs.ingestion.direct --changes``), with a full read once
-  ``BOOKRS_FULL_READ_EVERY`` has passed (default ``1d``) to catch what
-  was removed. Read-only, as every read of the library is.
+* ``read``  -- the catalogue records changed since the last read
+  (``bookrs.ingestion.koha_db --changes``), then the ratings and review
+  flags changed since (``bookrs.ingestion.direct --changes``); each reads
+  everything once ``BOOKRS_FULL_READ_EVERY`` has passed (default ``1d``),
+  which is the only read that sees what was removed. Read-only, as every
+  read of the library is.
 * ``embed`` -- vectors for books that are new or changed
   (``bookrs.embedding.cli``); nothing to do when nothing changed.
 * ``refit`` -- the ALS factors (``bookrs.recommend.cli``), by default
@@ -114,7 +115,8 @@ def commands(job: str, source_id: int, *, signal_: str = "ratings",
     """The commands one run of a job consists of, in order."""
     py, sid = sys.executable, str(source_id)
     if job == "read":
-        return [[py, "-m", "bookrs.ingestion.koha_db", "--source-id", sid],
+        return [[py, "-m", "bookrs.ingestion.koha_db", "--source-id", sid,
+                 "--changes", "--full-every", full_every],
                 [py, "-m", "bookrs.ingestion.direct", "--source-id", sid,
                  "--changes", "--full-every", full_every]]
     if job == "embed":

@@ -60,6 +60,11 @@ RUN grep -v '^numpy==' requirements-api.txt > /tmp/api.txt \
  && pip install --no-cache-dir -r /tmp/api.txt \
  && rm /tmp/api.txt requirements-api.txt
 
+# And the fixture tools' packages (tools/ucsd_full.py and its tests); their
+# numpy pin is the recommend image's, so nothing above moves.
+COPY requirements-fixture.txt .
+RUN pip install --no-cache-dir -r requirements-fixture.txt && rm requirements-fixture.txt
+
 COPY bookrs/ ./bookrs/
 COPY tests/ ./tests/
 COPY pytest.ini .

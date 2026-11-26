@@ -59,7 +59,7 @@ from scipy.sparse import csr_matrix
 
 from bookrs.evaluation.thesis import (
     CONFIDENCE, blend, content_scores, evaluate, fit, load, load_embeddings,
-    restrict, split,
+    restrict, slice_works, split,
 )
 
 log = logging.getLogger("bookrs.evaluation")
@@ -146,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--confidence", choices=sorted(CONFIDENCE), default="1+2r+3d")
     ap.add_argument("--min-ratings", type=int, default=10)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--slice", default=None, metavar="KOHA_BIBLIOS_TSV",
+                    help="Only the fixture slice's books (koha_biblios.tsv), as "
+                         "the thesis evaluated, when the library holds more.")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
@@ -153,7 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     import psycopg
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
-        data = restrict(load(conn, a.source_id), a.min_ratings)
+        data = restrict(load(conn, a.source_id,
+                                 slice_works(conn, a.source_id, a.slice) if a.slice else None), a.min_ratings)
         vectors, n_vectors, model = load_embeddings(conn, a.source_id, data.works)
     if not n_vectors:
         raise SystemExit(

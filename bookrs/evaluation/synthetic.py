@@ -256,7 +256,7 @@ def run_level(world: World, noise: float, args, s: Settings) -> dict:
 
 def load_world(conn, source_id: int, books_path: str, biblios_path: str, genres_path: str,
                s: Settings, seed: int) -> tuple[World, dict]:
-    from bookrs.evaluation.thesis import load_embeddings
+    from bookrs.evaluation.thesis import load, load_embeddings, restrict, slice_works
 
     ucsd_to_bib = {}
     with open(biblios_path, encoding="utf-8") as fh:
@@ -288,16 +288,18 @@ def load_world(conn, source_id: int, books_path: str, biblios_path: str, genres_
 
     works = np.array(sorted(genre_of), dtype=np.int64)
     vectors, n_vec, model = load_embeddings(conn, source_id, works)
-    counts = dict(conn.execute(
-        "SELECT work_id, count(*) FROM ratings WHERE source_id = %s GROUP BY work_id",
-        (source_id,)).fetchall())
-    pop = np.array([counts.get(int(w), 1) for w in works], dtype=np.float64)
-    activity = np.array([c for (c,) in conn.execute(
-        "SELECT count(*) FROM ratings WHERE source_id = %s GROUP BY patron_ref",
-        (source_id,)).fetchall()], dtype=np.int64)
-    hist = dict(conn.execute("SELECT rating, count(*) FROM ratings WHERE source_id = %s "
-                             "GROUP BY rating", (source_id,)).fetchall())
-    stars = np.array([hist.get(k, 0) for k in range(1, 6)], dtype=np.float64)
+    # What is copied from the real library -- how popular each book is,
+    # how many books a reader rates, the spread of stars -- is taken from
+    # the slice's population only: its books, and the readers with ten or
+    # more ratings among them. While the library held only the slice that
+    # was every rating; once it holds more, the generated readers still
+    # imitate the same real ones.
+    real = restrict(load(conn, source_id, slice_works(conn, source_id, biblios_path)), 10)
+    by_work = np.bincount(real.i, minlength=len(real.works))
+    counts = {int(w): int(c) for w, c in zip(real.works, by_work)}
+    pop = np.array([counts.get(int(w), 1) or 1 for w in works], dtype=np.float64)
+    activity = np.bincount(real.u, minlength=len(real.patrons)).astype(np.int64)
+    stars = np.bincount(real.r, minlength=6)[1:6].astype(np.float64)
 
     rng = np.random.default_rng(seed + 7)
     style = rng.normal(size=(len(works), s.style_dims)) / np.sqrt(s.style_dims)

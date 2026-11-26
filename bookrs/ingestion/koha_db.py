@@ -84,7 +84,8 @@ class DbWork:
 
     def items_hash(self) -> str:
         parts = [f"{i['barcode']}:{i['holding_branch']}:{i['call_number']}:"
-                 f"{i['item_type']}:{i['due_date']}" for i in self.items]
+                 f"{i['item_type']}:{i['due_date']}:{i.get('collection') or ''}"
+                 for i in self.items]
         return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -95,7 +96,12 @@ class DbWork:
 # does exist in the wild, and dropping it silently would be the wrong
 # failure. opac_suppressed is respected: a record the library has chosen
 # to hide from its own catalogue should not be recommended in it.
-_WORKS = """
+#
+# Records are read a page at a time, by record number. A catalogue of
+# 883,000 records read in one statement is a gigabyte in this process
+# before the first one is stored; a page of BATCH is a few megabytes,
+# and each page is stored and committed before the next is asked for.
+_WORK_COLUMNS = """
     SELECT b.biblionumber,
            b.title, b.subtitle, b.author,
            b.abstract, b.notes,
@@ -104,19 +110,48 @@ _WORKS = """
     FROM biblio b
     LEFT JOIN biblioitems bi ON bi.biblionumber = b.biblionumber
     WHERE b.opac_suppressed = 0
-      {since}
+"""
+_WORKS_PAGE = _WORK_COLUMNS + """
+      AND b.biblionumber > %s {since}
+    ORDER BY b.biblionumber
+    LIMIT %s
+"""
+_WORKS_IN = _WORK_COLUMNS + """
+      AND b.biblionumber IN ({ids})
     ORDER BY b.biblionumber
 """
 
-_ITEMS = """
+# ccode is the collection code: where a library records genre on the
+# shelf ("Mystery", "Young adult"). The UCSD fixture writes the thesis's
+# genres there (tools/ucsd_to_marc21.py, 952$8).
+_ITEM_COLUMNS = """
     SELECT i.biblionumber, i.barcode, i.homebranch, i.holdingbranch,
            i.location, i.itemcallnumber, i.itype, i.onloan,
-           i.issues, i.notforloan, i.itemlost, i.withdrawn
+           i.issues, i.notforloan, i.itemlost, i.withdrawn, i.ccode
     FROM items i
     JOIN biblio b ON b.biblionumber = i.biblionumber
     WHERE b.opac_suppressed = 0
+"""
+_ITEMS_RANGE = _ITEM_COLUMNS + """
+      AND i.biblionumber BETWEEN %s AND %s
     ORDER BY i.biblionumber
 """
+_ITEMS_IN = _ITEM_COLUMNS + """
+      AND i.biblionumber IN ({ids})
+    ORDER BY i.biblionumber
+"""
+
+# What changed since: Koha stamps all three on every change (ON UPDATE
+# current_timestamp). A copy checked out or moved changes items only, a
+# corrected ISBN biblioitems only -- so all three are asked.
+_CHANGED = (
+    "SELECT biblionumber FROM biblio WHERE timestamp >= %s",
+    "SELECT biblionumber FROM biblioitems WHERE timestamp >= %s",
+    "SELECT DISTINCT biblionumber FROM items WHERE timestamp >= %s",
+)
+_KOHA_NOW = "SELECT NOW()"
+
+BATCH = 5_000
 
 
 def _split_authors(author: str | None) -> list[str]:
@@ -144,13 +179,7 @@ def _isbns(isbn: str | None) -> list[str]:
     return out
 
 
-def read_works(conn, since=None) -> list[DbWork]:
-    clause = "AND b.timestamp > %s" if since else ""
-    sql = _WORKS.format(since=clause)
-    with conn.cursor() as cur:
-        cur.execute(sql, (since,) if since else ())
-        rows = cur.fetchall()
-
+def _to_works(rows) -> dict[str, DbWork]:
     works: dict[str, DbWork] = {}
     for r in rows:
         bib = str(r[0])
@@ -174,28 +203,100 @@ def read_works(conn, since=None) -> list[DbWork]:
             publication_year=year_i,
             modified=r[7],
         )
+    return works
 
+
+def _attach_items(works: dict[str, DbWork], rows) -> None:
+    for r in rows:
+        w = works.get(str(r[0]))
+        if w is None:
+            continue
+        # notforloan, itemlost and withdrawn are carried so the
+        # availability count can exclude copies that exist but
+        # cannot be borrowed -- a distinction MARC 952 export does
+        # not always preserve.
+        w.items.append({
+            "barcode": r[1], "home_branch": r[2], "holding_branch": r[3],
+            "location": r[4], "call_number": r[5], "item_type": r[6],
+            "due_date": r[7], "issues": r[8] or 0,
+            "lendable": not (r[9] or r[10] or r[11]),
+            "collection": (r[12] or "").strip()[:80] or None,
+        })
+
+
+def _fetch(conn, sql, params=()):
     with conn.cursor() as cur:
-        cur.execute(_ITEMS)
-        for r in cur.fetchall():
-            w = works.get(str(r[0]))
-            if w is None:
-                continue
-            # notforloan, itemlost and withdrawn are carried so the
-            # availability count can exclude copies that exist but
-            # cannot be borrowed -- a distinction MARC 952 export does
-            # not always preserve.
-            w.items.append({
-                "barcode": r[1], "home_branch": r[2], "holding_branch": r[3],
-                "location": r[4], "call_number": r[5], "item_type": r[6],
-                "due_date": r[7], "issues": r[8] or 0,
-                "lendable": not (r[9] or r[10] or r[11]),
-            })
-    return list(works.values())
+        cur.execute(sql, params or None)
+        return cur.fetchall()
 
 
-def store(conn, source_id: int, works: list[DbWork]) -> dict:
-    """Upsert into works and items, keyed on biblionumber.
+def read_pages(conn, since=None, batch: int = BATCH):
+    """Every record (or those stamped after ``since``), a page at a time."""
+    last = -1
+    clause = "AND b.timestamp > %s" if since else ""
+    while True:
+        params = (last,) + ((since,) if since else ()) + (batch,)
+        rows = _fetch(conn, _WORKS_PAGE.format(since=clause), params)
+        if not rows:
+            return
+        works = _to_works(rows)
+        first, last = int(rows[0][0]), int(rows[-1][0])
+        _attach_items(works, _fetch(conn, _ITEMS_RANGE, (first, last)))
+        yield list(works.values())
+        if len(rows) < batch:
+            return
+
+
+def changed_records(conn, since) -> list[int]:
+    """Record numbers whose record, publication details or copies were
+    stamped at or after ``since``, by Koha's clock."""
+    found: set[int] = set()
+    for sql in _CHANGED:
+        found.update(int(r[0]) for r in _fetch(conn, sql, (since,)) if r[0] is not None)
+    return sorted(found)
+
+
+def read_records(conn, ids: list[int], batch: int = BATCH):
+    """Those records, a page at a time. A record no longer in Koha, or
+    hidden from its OPAC, is simply not returned: the daily full read is
+    what notices it is gone."""
+    for at in range(0, len(ids), batch):
+        chunk = [int(i) for i in ids[at:at + batch]]
+        marks = ", ".join(["%s"] * len(chunk))
+        works = _to_works(_fetch(conn, _WORKS_IN.format(ids=marks), tuple(chunk)))
+        if works:
+            _attach_items(works, _fetch(conn, _ITEMS_IN.format(ids=marks), tuple(chunk)))
+        yield list(works.values())
+
+
+def read_works(conn, since=None) -> list[DbWork]:
+    """The whole catalogue (or what changed after ``since``) as one list."""
+    return [w for page in read_pages(conn, since) for w in page]
+
+
+def koha_clock(conn):
+    """Koha's NOW(), in the clock that stamps its records."""
+    return _fetch(conn, _KOHA_NOW)[0][0]
+
+
+def held(conn, source_id: int) -> dict[str, tuple]:
+    """What is already stored for this source: record -> (id, hashes)."""
+    rows = conn.execute(
+        "SELECT source_record_id, id, content_hash, items_hash "
+        "FROM works WHERE source_id = %s", (source_id,)).fetchall()
+    return {r[0]: (r[1], r[2], r[3]) for r in rows}
+
+
+def new_stats() -> dict:
+    return {"new": 0, "updated": 0, "unchanged": 0, "items": 0, "removed": 0,
+            "had_items": False}
+
+
+def store_page(conn, source_id: int, works: list[DbWork], seen: dict,
+               stats: dict) -> None:
+    """Upsert one page into works and items, keyed on biblionumber, and
+    commit it. ``seen`` (from ``held``) is kept current as records are
+    added, so a later page never mistakes one for new.
 
     source_record_id is the bare biblionumber here, not an OAI
     identifier. A catalogue read this way has no archive prefix,
@@ -203,20 +304,15 @@ def store(conn, source_id: int, works: list[DbWork]) -> dict:
     matches a bare biblionumber against an identifier's suffix, so the
     widget needs no change.
     """
-    stats = {"new": 0, "updated": 0, "unchanged": 0, "items": 0}
+    unchanged: list[int] = []
+    stats["had_items"] = stats["had_items"] or any(w.items for w in works)
     with conn.cursor() as cur:
-        cur.execute(
-            "SELECT source_record_id, id, content_hash, items_hash "
-            "FROM works WHERE source_id = %s", (source_id,))
-        seen = {r[0]: (r[1], r[2], r[3]) for r in cur.fetchall()}
-
         for w in works:
             ch, ih = w.content_hash(), w.items_hash()
             existing = seen.get(w.biblionumber)
             if existing and existing[1] == ch and existing[2] == ih:
                 stats["unchanged"] += 1
-                cur.execute("UPDATE works SET last_seen = now() WHERE id = %s",
-                            (existing[0],))
+                unchanged.append(existing[0])
                 continue
 
             cur.execute(
@@ -245,33 +341,91 @@ def store(conn, source_id: int, works: list[DbWork]) -> dict:
             )
             work_id = cur.fetchone()[0]
             stats["new" if existing is None else "updated"] += 1
+            seen[w.biblionumber] = (work_id, ch, ih)
 
             cur.execute("DELETE FROM items WHERE work_id = %s", (work_id,))
-            for it in w.items:
-                cur.execute(
+            if w.items:
+                cur.executemany(
                     """
                     INSERT INTO items (work_id, barcode, owning_branch,
                                        holding_branch, location, call_number,
-                                       item_type, due_date, issue_count)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                       item_type, due_date, issue_count, collection)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (work_id, it["barcode"], it["home_branch"],
-                     it["holding_branch"], it["location"], it["call_number"],
-                     it["item_type"], it["due_date"], it["issues"]),
-                )
-                stats["items"] += 1
+                    [(work_id, it["barcode"], it["home_branch"], it["holding_branch"],
+                      it["location"], it["call_number"], it["item_type"],
+                      it["due_date"], it["issues"], it.get("collection"))
+                     for it in w.items])
+                stats["items"] += len(w.items)
 
+        # One statement for the page, not one per record: on a full read
+        # of a large catalogue nearly every record is unchanged.
+        if unchanged:
+            cur.execute("UPDATE works SET last_seen = now() WHERE id = ANY(%s)",
+                        (unchanged,))
+    conn.commit()
+
+
+def finish(conn, source_id: int, stats: dict, *, watermark=None, full: bool = False,
+           full_started=None) -> None:
+    """Record the read on the source, and after a complete full read mark
+    what Koha no longer holds as deleted.
+
+    Only a full read can see a removal: a record deleted in Koha (or hidden
+    from its OPAC) is simply not returned, so its row was not touched by
+    this read. ``full_started`` is this service's clock when the read
+    began; every record the read saw has ``last_seen`` after it.
+    """
+    with conn.cursor() as cur:
+        if full and full_started is not None:
+            saw = stats["new"] + stats["updated"] + stats["unchanged"]
+            if saw == 0:
+                raise EmptyCatalogue(
+                    f"the library returned no records for source {source_id}; "
+                    "nothing was marked deleted")
+            cur.execute(
+                "UPDATE works SET deleted_at = now() WHERE source_id = %s "
+                "AND deleted_at IS NULL AND last_seen < %s",
+                (source_id, full_started))
+            stats["removed"] = cur.rowcount
         # Not a harvest, but the same question: when was this source
         # last read? A source that always reports "never" looks broken
         # to anyone checking freshness, and a stalled read is exactly
         # what freshness reporting exists to catch.
         cur.execute(
-            "UPDATE sources SET last_harvest = now(), last_had_items = %s "
-            "WHERE id = %s",
-            (stats["items"] > 0 or any(w.items for w in works), source_id),
-        )
+            "UPDATE sources SET last_harvest = now(), "
+            # A full read says whether the catalogue has copies; a read of
+            # changes that touched none says nothing about the rest.
+            "last_had_items = CASE WHEN %s THEN %s "
+            "ELSE coalesce(last_had_items, false) OR %s END, "
+            "catalogue_watermark = coalesce(%s, catalogue_watermark), "
+            "catalogue_full_read_at = CASE WHEN %s THEN now() "
+            "ELSE catalogue_full_read_at END WHERE id = %s",
+            (full, stats["had_items"], stats["had_items"], watermark, full, source_id))
     conn.commit()
+
+
+class EmptyCatalogue(RuntimeError):
+    """A full read returned nothing for a source that holds records."""
+
+
+def store(conn, source_id: int, works: list[DbWork]) -> dict:
+    """Upsert a list of records, and record the read. No removals: the
+    list need not be the whole catalogue."""
+    stats = new_stats()
+    seen = held(conn, source_id)
+    for at in range(0, len(works), BATCH):
+        store_page(conn, source_id, works[at:at + BATCH], seen, stats)
+    finish(conn, source_id, stats)
     return stats
+
+
+def catalogue_state(conn, source_id: int) -> tuple:
+    """(catalogue_watermark, catalogue_full_read_at) recorded for a source."""
+    row = conn.execute(
+        "SELECT catalogue_watermark, catalogue_full_read_at FROM sources WHERE id = %s",
+        (source_id,)).fetchone()
+    return (row[0], row[1]) if row else (None, None)
 
 
 # --------------------------------------------------------------------
@@ -386,9 +540,13 @@ def store_loans(conn, source_id: int, loans: list[DbLoan]) -> dict:
 def main() -> int:
     import argparse
     import sys
-    from urllib.parse import urlparse
+    from datetime import datetime, timezone
+    from urllib.parse import unquote, urlparse
 
     import psycopg
+
+    from bookrs.db.migrations import apply_migrations
+    from bookrs.ingestion.direct import CHANGES_MARGIN, choose_read
 
     ap = argparse.ArgumentParser(
         prog="bookrs.ingestion.koha_db",
@@ -398,9 +556,17 @@ def main() -> int:
     ap.add_argument("--source-id", type=int, required=True)
     ap.add_argument("--url", default=os.environ.get("KOHA_DB_URL", ""),
                     help="Read-only connection. Default: KOHA_DB_URL.")
+    ap.add_argument("--changes", action="store_true",
+                    help="Read only the records changed since the last read "
+                         "(a full read when none is recorded).")
+    ap.add_argument("--full-every", default="off",
+                    help="With --changes: read everything when the last full "
+                         "read is older than this (30m, 6h, 1d, 2w, off). A full "
+                         "read is the only one that sees a removed record.")
     ap.add_argument("--since", default=None,
                     help="Only records modified after this timestamp "
-                         "(YYYY-MM-DD HH:MM:SS). Filters in SQL.")
+                         "(YYYY-MM-DD HH:MM:SS). Filters in SQL; records no "
+                         "watermark.")
     ap.add_argument("--loans", action="store_true",
                     help="Read circulation as well as cataloguing.")
     ap.add_argument("--no-history", action="store_true",
@@ -414,6 +580,11 @@ def main() -> int:
 
     if not a.url:
         ap.error("KOHA_DB_URL must be set, or --url given")
+    from bookrs.schedule import parse_every
+    try:
+        full_every = parse_every(a.full_every)
+    except ValueError as exc:
+        ap.error(f"--full-every: {exc}")
 
     try:
         import pymysql
@@ -423,32 +594,78 @@ def main() -> int:
 
     u = urlparse(a.url)
     koha = pymysql.connect(host=u.hostname, port=u.port or 3306,
-                           user=u.username, password=u.password,
+                           user=unquote(u.username or ""),
+                           password=unquote(u.password or ""),
                            database=u.path.lstrip("/"))
     secret = os.environ.get("BOOKRS_PATRON_SECRET", "")
     if a.loans and not secret:
         ap.error("BOOKRS_PATRON_SECRET must be set to read circulation")
+
+    stats, read, mode, since = new_stats(), 0, "full: asked for", None
     try:
-        works = read_works(koha, a.since)
-        loans = read_loans(koha, secret, not a.no_history) if a.loans else []
+        with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+            # The watermark columns are migration 8; this may be the first
+            # thing run after an upgrade.
+            apply_migrations(conn)
+            conn.commit()
+            if a.since:
+                mode = "since"
+                pages = read_pages(koha, a.since)
+            else:
+                watermark, full_at = catalogue_state(conn, a.source_id)
+                mode = choose_read(a.changes, watermark, full_at, full_every,
+                                   datetime.now(timezone.utc))
+                # Before reading anything: what changes during this read is
+                # what the next read of changes starts from.
+                started = koha_clock(koha)
+                if mode == "changes":
+                    since = watermark - CHANGES_MARGIN
+                    pages = read_records(koha, changed_records(koha, since))
+                else:
+                    if a.changes:
+                        log.info("reading the whole catalogue (%s)", mode.split(": ", 1)[1])
+                    full_started = conn.execute("SELECT now()").fetchone()[0]
+                    pages = read_pages(koha)
+
+            seen = held(conn, a.source_id)
+            for page in pages:
+                store_page(conn, a.source_id, page, seen, stats)
+                read += len(page)
+                if read % (BATCH * 20) == 0:
+                    log.info("  %d records so far", read)
+
+            if mode == "since":
+                finish(conn, a.source_id, stats)
+            else:
+                full = mode != "changes"
+                try:
+                    finish(conn, a.source_id, stats, watermark=started, full=full,
+                           full_started=full_started if full else None)
+                except EmptyCatalogue as e:
+                    print(f"error: {e}", file=sys.stderr)
+                    return 1
+            loans = read_loans(koha, secret, not a.no_history) if a.loans else []
+            lstats = store_loans(conn, a.source_id, loans) if a.loans else None
     finally:
         koha.close()
-    log.info("read %d records from the catalogue database", len(works))
 
-    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
-        stats = store(conn, a.source_id, works)
-        lstats = store_loans(conn, a.source_id, loans) if a.loans else None
-
-    log.info("%d new, %d updated, %d unchanged; %d item rows",
-             stats["new"], stats["updated"], stats["unchanged"], stats["items"])
+    if mode == "changes":
+        log.info("records changed since %s (Koha's clock): %d",
+                 since.strftime("%Y-%m-%d %H:%M:%S"), read)
+    else:
+        log.info("read %d records from the catalogue database", read)
+    log.info("%d new, %d updated, %d unchanged; %d item rows; %d no longer in "
+             "the catalogue", stats["new"], stats["updated"], stats["unchanged"],
+             stats["items"], stats["removed"])
     if lstats:
         log.info("%d loans (%d current, %d returned); %d inserted, %d updated, "
                  "%d unresolved", len(loans), lstats["current"],
                  lstats["historical"], lstats["inserted"], lstats["updated"],
                  lstats["unresolved"])
-    log.info("subjects are empty on this path: Koha keeps them in the MARC "
-             "record only, and reading them would mean parsing MARC from the "
-             "database instead of from OAI-PMH")
+    if mode != "changes":
+        log.info("subjects are empty on this path: Koha keeps them in the MARC "
+                 "record only, and reading them would mean parsing MARC from the "
+                 "database instead of from OAI-PMH")
     return 0
 
 

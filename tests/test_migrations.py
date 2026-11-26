@@ -92,6 +92,17 @@ class TestOutcome:
         """).fetchone()
         assert row == ("text", "YES")
 
+    def test_sources_record_where_the_last_catalogue_read_reached(self, conn):
+        apply_migrations(conn)
+        cols = dict(conn.execute("""
+            SELECT column_name, data_type FROM information_schema.columns
+            WHERE (table_name = 'sources' AND column_name LIKE 'catalogue_%%')
+               OR (table_name = 'items' AND column_name = 'collection')
+        """).fetchall())
+        assert cols == {"catalogue_watermark": "timestamp without time zone",
+                        "catalogue_full_read_at": "timestamp with time zone",
+                        "collection": "character varying"}
+
     def test_sources_record_where_the_last_ratings_read_reached(self, conn):
         """The watermark keeps Koha's clock as Koha gave it: no zone, so
         nothing converts it between the library's clock and this one."""
