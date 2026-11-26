@@ -440,7 +440,7 @@ one.
 
 | Job | Commands | Suggested cadence | Why |
 |---|---|---|---|
-| `read` | `python -m bookrs.ingestion.koha_db --source-id N`, then `python -m bookrs.ingestion.direct --source-id N` (ingestion image; needs `KOHA_DB_URL` and `BOOKRS_PATRON_SECRET`) | Hourly | Reads the catalogue, then the ratings and review flags, from Koha's database, read-only. A patron's new rating counts for their own recommendations as soon as it is read: their place in the model is computed from their ratings at each request |
+| `read` | `python -m bookrs.ingestion.koha_db --source-id N`, then `python -m bookrs.ingestion.direct --source-id N --changes --full-every 1d` (ingestion image; needs `KOHA_DB_URL` and `BOOKRS_PATRON_SECRET`) | Every 10 minutes | Reads the catalogue, then the ratings and review flags changed since the last read, from Koha's database, read-only: seconds. Once a day it reads everything instead (12 minutes for 16 million ratings), which also catches ratings and reviews that were removed. A patron's new rating counts for their own recommendations as soon as it is read: their place in the model is computed from their ratings at each request |
 | `embed` | `python -m bookrs.embedding.cli --source-id N` (embedding image) | After each read | Only new or changed records are encoded, so this is usually seconds |
 | `refit` | `python -m bookrs.recommend.cli --source-id N --signal ratings --factors 128 --iterations 10` (recommend image) | Daily or weekly | Relearns every book's factors from all ratings: everyone's results shift, including patrons who did nothing. One new rating does not change the shape of a factor space, so this needs a slower cadence than the read |
 
@@ -457,10 +457,15 @@ source and the cadences in `.env`:
 ```bash
 BOOKRS_SOURCE_ID=54
 KOHA_DB_URL=mysql://<read-only user>:<password>@<koha db host>:3306/<koha db>
-BOOKRS_READ_EVERY=1h
+BOOKRS_READ_EVERY=10m
+BOOKRS_FULL_READ_EVERY=1d
 BOOKRS_EMBED_EVERY=1h
 BOOKRS_REFIT_EVERY=1d
 ```
+
+Between full reads, `read` asks Koha only for what changed since the
+last read, by Koha's own clock (`bookrs/ingestion/direct.py` explains
+the margin and what only a full read can see).
 
 then start, follow and stop it:
 
@@ -486,7 +491,7 @@ the source and the times:
 
 ```cron
 # BookRS-Platform: read Koha, embed, refit
-5 * * * *   cd /opt/bookrs && docker compose run --rm -T ingestion sh -c 'python -m bookrs.ingestion.koha_db --source-id 54 && python -m bookrs.ingestion.direct --source-id 54' >> /var/log/bookrs-read.log 2>&1
+*/10 * * * * cd /opt/bookrs && docker compose run --rm -T ingestion sh -c 'python -m bookrs.ingestion.koha_db --source-id 54 && python -m bookrs.ingestion.direct --source-id 54 --changes --full-every 1d' >> /var/log/bookrs-read.log 2>&1
 35 * * * *  cd /opt/bookrs && docker compose run --rm -T embedding python -m bookrs.embedding.cli --source-id 54 >> /var/log/bookrs-embed.log 2>&1
 30 3 * * *  cd /opt/bookrs && docker compose run --rm -T recommend python -m bookrs.recommend.cli --source-id 54 --signal ratings --factors 128 --iterations 10 >> /var/log/bookrs-refit.log 2>&1
 ```

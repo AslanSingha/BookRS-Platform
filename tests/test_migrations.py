@@ -92,6 +92,18 @@ class TestOutcome:
         """).fetchone()
         assert row == ("text", "YES")
 
+    def test_sources_record_where_the_last_ratings_read_reached(self, conn):
+        """The watermark keeps Koha's clock as Koha gave it: no zone, so
+        nothing converts it between the library's clock and this one."""
+        apply_migrations(conn)
+        cols = dict(conn.execute("""
+            SELECT column_name, data_type FROM information_schema.columns
+            WHERE table_name = 'sources'
+              AND column_name IN ('ratings_watermark', 'ratings_full_read_at')
+        """).fetchall())
+        assert cols == {"ratings_watermark": "timestamp without time zone",
+                        "ratings_full_read_at": "timestamp with time zone"}
+
     def test_job_runs_records_what_the_scheduler_ran(self, conn):
         """bookrs/schedule.py decides when a job is next due from it, and
         /health shows it; an unfinished run keeps NULL in finished_at."""

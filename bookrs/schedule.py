@@ -7,8 +7,10 @@
 Three jobs keep the platform in step with the library:
 
 * ``read``  -- the catalogue (``bookrs.ingestion.koha_db``), then the
-  ratings and review flags (``bookrs.ingestion.direct``). Read-only, as
-  every read of the library is.
+  ratings and review flags changed since the last read
+  (``bookrs.ingestion.direct --changes``), with a full read once
+  ``BOOKRS_FULL_READ_EVERY`` has passed (default ``1d``) to catch what
+  was removed. Read-only, as every read of the library is.
 * ``embed`` -- vectors for books that are new or changed
   (``bookrs.embedding.cli``); nothing to do when nothing changed.
 * ``refit`` -- the ALS factors (``bookrs.recommend.cli``), by default
@@ -85,12 +87,14 @@ def parse_every(text: str) -> timedelta | None:
 
 
 def commands(job: str, source_id: int, *, signal_: str = "ratings",
-             factors: int = 128, iterations: int = 10) -> list[list[str]]:
+             factors: int = 128, iterations: int = 10,
+             full_every: str = "1d") -> list[list[str]]:
     """The commands one run of a job consists of, in order."""
     py, sid = sys.executable, str(source_id)
     if job == "read":
         return [[py, "-m", "bookrs.ingestion.koha_db", "--source-id", sid],
-                [py, "-m", "bookrs.ingestion.direct", "--source-id", sid]]
+                [py, "-m", "bookrs.ingestion.direct", "--source-id", sid,
+                 "--changes", "--full-every", full_every]]
     if job == "embed":
         return [[py, "-m", "bookrs.embedding.cli", "--source-id", sid]]
     if job == "refit":
@@ -218,6 +222,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="refit only: what the factors are learned from.")
     ap.add_argument("--factors", type=int, default=128, help="refit only.")
     ap.add_argument("--iterations", type=int, default=10, help="refit only.")
+    ap.add_argument("--full-every", default=None,
+                    help="read only: read everything, not just changes, once "
+                         "this has passed since the last full read (30m, 6h, "
+                         "1d, 2w or off). Default: BOOKRS_FULL_READ_EVERY, else 1d.")
     return ap
 
 
@@ -235,6 +243,11 @@ def main(argv: list[str] | None = None) -> int:
         parse_every(every)
     except ValueError as exc:
         ap.error(str(exc))
+    full_every = a.full_every or os.environ.get("BOOKRS_FULL_READ_EVERY") or "1d"
+    try:
+        parse_every(full_every)
+    except ValueError as exc:
+        ap.error(f"--full-every: {exc}")
     source_id = a.source_id
     if source_id is None and os.environ.get("BOOKRS_SOURCE_ID"):
         source_id = int(os.environ["BOOKRS_SOURCE_ID"])
@@ -262,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
 
     serve(connect, a.job, source_id, every,
           commands(a.job, source_id, signal_=a.signal, factors=a.factors,
-                   iterations=a.iterations))
+                   iterations=a.iterations, full_every=full_every))
     return 0
 
 

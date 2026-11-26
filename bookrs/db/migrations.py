@@ -192,6 +192,25 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ON job_runs (job, source_id, started_at DESC)",
         ),
     ),
+    Migration(
+        version=7,
+        description="sources: where the last ratings read reached, and the last full one",
+        statements=(
+            # A read of changes (bookrs.ingestion.direct --changes) asks
+            # Koha for ratings stamped since the last read. "Since" is
+            # Koha's own NOW() at the start of that read, kept as Koha
+            # reported it -- a timestamp without zone, in the clock that
+            # stamps the ratings -- so nothing converts between clocks.
+            # It is written in the same transaction as the ratings it
+            # covers: a watermark that moved without them would skip
+            # what they missed.
+            "ALTER TABLE sources ADD COLUMN IF NOT EXISTS ratings_watermark TIMESTAMP",
+            # When the last full read finished, this service's clock: a
+            # read of changes cannot see what was removed, so --full-every
+            # reads everything again once this is old enough.
+            "ALTER TABLE sources ADD COLUMN IF NOT EXISTS ratings_full_read_at TIMESTAMPTZ",
+        ),
+    ),
 )
 
 _LEDGER = """

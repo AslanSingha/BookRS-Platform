@@ -8,7 +8,7 @@ would only confirm that the SQL was sent.
 """
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -236,3 +236,288 @@ class TestStoring:
               (("p%d" % n, "1") for n in range(0, 1000, 10)))
         assert conn.execute("SELECT count(*), count(*) FILTER (WHERE reviewed) "
                             "FROM ratings").fetchone() == (1000, 100)
+
+
+# --- reading what changed --------------------------------------------------
+
+def _norm(sql):
+    return " ".join(sql.split())
+
+
+class _Library:
+    """A fake Koha answering the reader's own queries from its own tables,
+    as Koha would: ratings keyed by (borrower, record) with a timestamp,
+    reviews with the date they were written, and a clock."""
+
+    def __init__(self, now, ratings=(), reviews=()):
+        self.now = now
+        self.ratings = {(b, r): (v, t) for b, r, v, t in ratings}
+        self.reviews = list(reviews)        # (borrower, record, datereviewed)
+        self.queries = []
+
+    def rate(self, borrower, record, value, at):
+        self.ratings[(borrower, record)] = (value, at)
+
+    def cursor(self):
+        return _LibraryCursor(self)
+
+    def close(self):
+        pass
+
+
+class _LibraryCursor:
+    def __init__(self, library):
+        self.lib, self.rows = library, []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        q, lib = _norm(sql), self.lib
+        lib.queries.append((q, params))
+        if q == _norm(direct._KOHA_NOW):
+            self.rows = [(lib.now,)]
+        elif q == _norm(direct._KOHA_RATINGS):
+            self.rows = [(b, r, v, t) for (b, r), (v, t) in lib.ratings.items()]
+        elif q == _norm(direct._KOHA_REVIEWS):
+            self.rows = [(b, r) for b, r, _ in lib.reviews]
+        elif q == _norm(direct._KOHA_RATINGS_SINCE):
+            self.rows = [(b, r, v, t) for (b, r), (v, t) in lib.ratings.items()
+                         if t >= params[0]]
+        elif q == _norm(direct._KOHA_REVIEWS_SINCE):
+            self.rows = [(b, r) for b, r, d in lib.reviews if d >= params[0]]
+        elif q.startswith(_norm(direct._KOHA_REVIEWS_OF.split("{pairs}")[0])):
+            asked = set(zip(params[::2], params[1::2]))
+            self.rows = sorted({(b, r) for b, r, _ in lib.reviews if (b, r) in asked})
+        else:
+            raise AssertionError(f"a query Koha was not expected to get: {q}")
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+    def fetchmany(self, size):
+        batch, self.rows = self.rows[:size], self.rows[size:]
+        return batch
+
+
+K0 = datetime(2026, 11, 26, 7, 0)            # Koha's clock: no zone, as Koha gives it
+MIN = timedelta(minutes=1)
+
+
+class TestReadingChanges:
+    def test_only_ratings_stamped_since_are_read(self):
+        lib = _Library(K0, ratings=[(7, 1, 4, K0 - 60 * MIN), (8, 2, 5, K0 - MIN)])
+        ratings, flagged = direct.read_koha_changes(lib, _Pseudonymiser("s"), K0 - 5 * MIN)
+        assert [(r[1], r[2]) for r in ratings] == [("2", 5)] and flagged == []
+
+    def test_a_changed_rating_carries_its_review_flag_whenever_it_was_written(self):
+        """A patron who reviewed a book last year and re-rates it today:
+        the flag is Koha's, not only what changed since."""
+        lib = _Library(K0, ratings=[(7, 1, 5, K0 - MIN), (8, 1, 2, K0 - MIN)],
+                       reviews=[(7, 1, K0 - 365 * 24 * 60 * MIN)])
+        ratings, _ = direct.read_koha_changes(lib, _Pseudonymiser("s"), K0 - 5 * MIN)
+        flags = {r[2]: r[4] for r in ratings}
+        assert flags == {5: True, 2: False}
+
+    def test_a_review_written_since_is_reported_for_flagging(self):
+        lib = _Library(K0, ratings=[(7, 1, 5, K0 - 60 * MIN)], reviews=[(7, 1, K0 - MIN)])
+        ratings, flagged = direct.read_koha_changes(lib, _Pseudonymiser("s"), K0 - 5 * MIN)
+        p = _Pseudonymiser("s")
+        assert ratings == [] and flagged == [(p(7), "1")]
+
+    def test_the_review_question_names_the_changed_pairs_only(self):
+        lib = _Library(K0, ratings=[(7, 1, 5, K0 - MIN), (9, 3, 4, K0 - 99 * MIN)])
+        direct.read_koha_changes(lib, _Pseudonymiser("s"), K0 - 5 * MIN)
+        (asked,) = [p for q, p in lib.queries if "IN (" in q]
+        assert asked == (7, 1)
+
+    def test_many_changes_are_asked_about_in_chunks(self, monkeypatch):
+        monkeypatch.setattr(direct, "_PAIRS_PER_QUERY", 2)
+        lib = _Library(K0, ratings=[(b, 1, 4, K0) for b in range(5)])
+        direct.read_koha_changes(lib, _Pseudonymiser("s"), K0 - MIN)
+        assert sum("IN (" in q for q, _ in lib.queries) == 3
+
+    def test_no_changes_ask_no_review_question(self):
+        lib = _Library(K0)
+        assert direct.read_koha_changes(lib, _Pseudonymiser("s"), K0) == ([], [])
+        assert not any("IN (" in q for q, _ in lib.queries)
+
+    def test_nothing_sent_to_the_library_can_write_or_read_review_text(self):
+        pairs = direct._KOHA_REVIEWS_OF.format(pairs="(%s, %s)")
+        for sql in (direct._KOHA_NOW, direct._KOHA_RATINGS_SINCE,
+                    direct._KOHA_REVIEWS_SINCE, pairs):
+            words = sql.upper().replace(",", " ").split()
+            assert words[0] == "SELECT"
+            assert not {"INSERT", "UPDATE", "DELETE", "REPLACE", "ALTER",
+                        "DROP", "CREATE", "TRUNCATE", "INTO"} & set(words)
+            selected = sql.lower().split(" from ")[0]
+            assert "review" not in selected.replace("reviews", "") and "*" not in selected
+
+
+class TestChoosingTheRead:
+    NOW = datetime(2026, 11, 26, 7, 0, tzinfo=timezone.utc)
+    DAY = timedelta(days=1)
+
+    def test_a_full_read_unless_changes_are_asked_for(self):
+        assert direct.choose_read(False, K0, self.NOW, self.DAY, self.NOW).startswith("full")
+
+    def test_the_first_read_of_changes_is_a_full_one(self):
+        assert "no earlier read" in direct.choose_read(True, None, None, self.DAY, self.NOW)
+
+    def test_a_full_read_once_full_every_has_passed(self):
+        assert direct.choose_read(True, K0, self.NOW - self.DAY, self.DAY,
+                                  self.NOW).startswith("full")
+
+    def test_changes_in_between(self):
+        assert direct.choose_read(True, K0, self.NOW - timedelta(hours=23),
+                                  self.DAY, self.NOW) == "changes"
+
+    def test_full_every_off_reads_changes_for_ever(self):
+        assert direct.choose_read(True, K0, None, None, self.NOW) == "changes"
+
+
+def _rated(conn, sid):
+    return {(ref[:6], rec): (rating, reviewed) for ref, rec, rating, reviewed in _stored(conn, sid)}
+
+
+class TestStoringChanges:
+    def _full(self, conn, sid, rows, reviews=(), watermark=None):
+        store(conn, sid, rows, reviews, watermark=watermark)
+
+    def test_a_changed_rating_is_updated_and_the_rest_left_alone(self, conn):
+        sid = _library(conn)
+        self._full(conn, sid, [("p1", "1", 4, T), ("p2", "2", 3, T)])
+        stats = direct.store_changes(conn, sid, [("p1", "1", 2, T, False)])
+        assert _rated(conn, sid) == {("p1", "1"): (2, False), ("p2", "2"): (3, False)}
+        assert (stats["stored"], stats["unchanged"]) == (1, 0)
+
+    def test_a_new_rating_is_added_with_its_review_flag(self, conn):
+        sid = _library(conn)
+        direct.store_changes(conn, sid, [("p1", "3", 5, T, True)])
+        assert _rated(conn, sid) == {("p1", "3"): (5, True)}
+
+    def test_a_rating_read_twice_in_the_margin_is_stored_once(self, conn):
+        sid = _library(conn)
+        direct.store_changes(conn, sid, [("p1", "1", 4, T, False)])
+        stats = direct.store_changes(conn, sid, [("p1", "1", 4, T, False)])
+        assert (stats["stored"], stats["unchanged"]) == (0, 1)
+
+    def test_a_review_written_since_flags_the_stored_rating(self, conn):
+        sid = _library(conn)
+        self._full(conn, sid, [("p1", "1", 4, T), ("p2", "1", 4, T)])
+        stats = direct.store_changes(conn, sid, [], [("p1", "1"), ("p9", "2")])
+        assert _rated(conn, sid) == {("p1", "1"): (4, True), ("p2", "1"): (4, False)}
+        assert stats["flagged"] == 1
+
+    def test_a_removed_rating_waits_for_the_full_read(self, conn):
+        """A read of changes cannot see what was removed; it removes
+        nothing, and --full-every is what catches it."""
+        sid = _library(conn)
+        self._full(conn, sid, [("p1", "1", 4, T)])
+        direct.store_changes(conn, sid, [])
+        assert _rated(conn, sid) == {("p1", "1"): (4, False)}
+
+    def test_no_changes_is_the_usual_case_not_an_error(self, conn):
+        sid = _library(conn)
+        assert direct.store_changes(conn, sid, [])["read"] == 0
+
+    def test_unknown_records_and_bad_values_are_counted_not_stored(self, conn):
+        sid = _library(conn)
+        stats = direct.store_changes(conn, sid, [("p1", "99", 4, T, False),
+                                                 ("p1", "1", 9, T, False)])
+        assert (stats["unresolved"], stats["invalid"]) == (1, 1) and _rated(conn, sid) == {}
+
+    def test_another_librarys_ratings_are_untouched(self, conn):
+        a, b = _library(conn, name="a"), _library(conn, name="b")
+        self._full(conn, b, [("p1", "1", 4, T)])
+        direct.store_changes(conn, a, [("p1", "1", 1, T, False)], [("p1", "1")])
+        assert _rated(conn, b) == {("p1", "1"): (4, False)}
+
+    def test_the_watermark_moves_with_the_ratings(self, conn):
+        sid = _library(conn)
+        direct.store_changes(conn, sid, [("p1", "1", 4, T, False)], watermark=K0)
+        assert direct.read_state(conn, sid)[0] == K0
+
+    def test_a_store_that_fails_leaves_the_watermark_where_it_was(self, conn):
+        sid = _library(conn)
+        direct.store_changes(conn, sid, [], watermark=K0)
+
+        def broken():
+            yield ("p1", "1", 4, T, False)
+            raise RuntimeError("the connection to Koha dropped")
+        with pytest.raises(RuntimeError):
+            direct.store_changes(conn, sid, broken(), watermark=K0 + 60 * MIN)
+        conn.rollback()
+        assert direct.read_state(conn, sid)[0] == K0 and _rated(conn, sid) == {}
+
+    def test_a_full_read_records_the_watermark_and_when_it_finished(self, conn):
+        sid = _library(conn)
+        self._full(conn, sid, [("p1", "1", 4, T)], watermark=K0)
+        watermark, full_at = direct.read_state(conn, sid)
+        assert watermark == K0 and full_at is not None
+
+
+class TestTheCommand:
+    """main() end to end: a fake Koha behind the pymysql interface, the
+    real database behind the service, and the watermark between runs."""
+
+    def _run(self, monkeypatch, library, *args):
+        import sys
+        import types
+        fake = types.ModuleType("pymysql")
+        cursors = types.ModuleType("pymysql.cursors")
+        cursors.SSCursor = object
+        fake.cursors = cursors
+        fake.connect = lambda **kw: library
+        monkeypatch.setitem(sys.modules, "pymysql", fake)
+        monkeypatch.setitem(sys.modules, "pymysql.cursors", cursors)
+        monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
+        monkeypatch.setenv("BOOKRS_PATRON_SECRET", "s3cret")
+        monkeypatch.setattr(sys, "argv", ["direct", "--source-id", str(self.sid),
+                                          "--url", "mysql://u:p@koha:3306/koha", *args])
+        return direct.main()
+
+    def test_a_rating_given_after_a_read_arrives_with_the_next_read_of_changes(
+            self, conn, monkeypatch, caplog):
+        import logging
+        self.sid = _library(conn)
+        lib = _Library(K0, ratings=[(7, 1, 4, K0 - 600 * MIN), (8, 2, 3, K0 - 600 * MIN)])
+        assert self._run(monkeypatch, lib, "--changes") == 0      # first: full
+        assert len(_stored(conn, self.sid)) == 2
+        assert direct.read_state(conn, self.sid)[0] == K0
+
+        lib.now = K0 + 10 * MIN
+        lib.rate(7, 3, 5, K0 + 2 * MIN)                            # in the OPAC
+        lib.rate(8, 2, 1, K0 + 3 * MIN)                            # re-rated
+        with caplog.at_level(logging.INFO, logger="bookrs.ingestion.direct"):
+            assert self._run(monkeypatch, lib, "--changes") == 0
+        assert "changes since 2026-11-26 06:50:00" in caplog.text
+        ratings = {(rec, rating) for _, rec, rating, _ in _stored(conn, self.sid)}
+        assert ratings == {("1", 4), ("2", 1), ("3", 5)}
+        assert direct.read_state(conn, self.sid)[0] == K0 + 10 * MIN
+        # The second read never asked for all the ratings.
+        assert sum(q == _norm(direct._KOHA_RATINGS) for q, _ in lib.queries) == 1
+
+    def test_full_every_reads_everything_again_and_catches_a_removal(
+            self, conn, monkeypatch):
+        self.sid = _library(conn)
+        lib = _Library(K0, ratings=[(7, 1, 4, K0 - 600 * MIN), (8, 2, 3, K0 - 600 * MIN)])
+        self._run(monkeypatch, lib, "--changes")
+        del lib.ratings[(8, 2)]
+        lib.now = K0 + 10 * MIN
+        self._run(monkeypatch, lib, "--changes", "--full-every", "1d")
+        assert len(_stored(conn, self.sid)) == 2                  # changes only
+        conn.execute("UPDATE sources SET ratings_full_read_at = now() - interval '25 hours'")
+        conn.commit()
+        self._run(monkeypatch, lib, "--changes", "--full-every", "1d")
+        assert len(_stored(conn, self.sid)) == 1                  # the full read
+
+    def test_a_bad_full_every_is_refused_before_koha_is_asked(self, conn, monkeypatch):
+        self.sid = _library(conn)
+        lib = _Library(K0)
+        with pytest.raises(SystemExit):
+            self._run(monkeypatch, lib, "--changes", "--full-every", "daily")
+        assert lib.queries == []

@@ -124,7 +124,8 @@ class TestSchedulingIsDeliberate:
             pytest.skip("README.md is not mounted into this environment")
         readme = path.read_text(encoding="utf-8")
         assert "--profile schedule" in readme
-        for setting in ("BOOKRS_READ_EVERY", "BOOKRS_EMBED_EVERY",
-                        "BOOKRS_REFIT_EVERY", "BOOKRS_SOURCE_ID"):
+        for setting in ("BOOKRS_READ_EVERY", "BOOKRS_FULL_READ_EVERY",
+                        "BOOKRS_EMBED_EVERY", "BOOKRS_REFIT_EVERY",
+                        "BOOKRS_SOURCE_ID"):
             assert setting in readme
         assert "cron" in readme.lower()

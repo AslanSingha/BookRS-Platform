@@ -50,6 +50,13 @@ CREATE TABLE sources (
     -- learn that: the request times out rather than failing, which
     -- reads as the library being down.
     request_headers JSONB         NOT NULL DEFAULT '{}'::jsonb,
+    -- Where the last ratings read reached: Koha's own NOW() at its start,
+    -- as Koha reported it, so the next read of changes asks for what was
+    -- stamped since in the same clock (migration 7).
+    ratings_watermark    TIMESTAMP,
+    -- When the last full ratings read finished. A read of changes cannot
+    -- see removals; --full-every reads everything once this is old enough.
+    ratings_full_read_at TIMESTAMPTZ,
     UNIQUE (base_url, metadata_prefix)
 );
 
