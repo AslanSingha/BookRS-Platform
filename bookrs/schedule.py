@@ -3,6 +3,7 @@
     python -m bookrs.schedule read  --every 1h --source-id 54
     python -m bookrs.schedule embed --every 1h --source-id 54
     python -m bookrs.schedule refit --every 1d --source-id 54
+    python -m bookrs.schedule read --now           # once, now, and exit
 
 Three jobs keep the platform in step with the library:
 
@@ -29,6 +30,19 @@ that failed is retried the same day. A job that never ran is due at
 once. Because the record lives in the database, a container that
 restarts does not run everything again, and a changed cadence applies
 from the last run.
+
+**Now, by hand.** ``--now`` runs the job once at once, records it like
+any other run, and exits: 0 if it succeeded. The scheduler counts it, so
+the next scheduled run is one cadence after it. In a running container:
+``docker compose exec schedule-read python -m bookrs.schedule read --now``.
+
+**One run at a time.** Two runs of one job for one library never
+overlap: two refits would write the same factors, two reads the same
+ratings. A run holds a Postgres advisory lock for its job and library
+on a connection of its own, which the database releases when that
+connection closes, also when the process is killed. A scheduled run
+that finds the lock taken looks again a minute later; ``--now`` waits
+for the run in progress to finish, then runs.
 
 **What a run is.** Each command runs as a child process, exactly as an
 operator would type it, with that module's own logging; its output is
@@ -57,7 +71,8 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("bookrs.schedule")
@@ -71,6 +86,13 @@ _UNITS = {"m": 60, "h": 3_600, "d": 86_400, "w": 604_800}
 # refit still fails; a minute would hammer a library's database that is
 # down for maintenance.
 RETRY_AFTER_FAILURE = timedelta(hours=1)
+
+# How soon a scheduled run that found its job already running (started
+# by hand) looks again.
+BUSY_RETRY = 60.0
+
+# What job_runs.every says of a run by hand when no cadence is set.
+BY_HAND = "by hand"
 
 
 def parse_every(text: str) -> timedelta | None:
@@ -129,13 +151,39 @@ def _module(cmd: list[str]) -> str:
     return cmd[cmd.index("-m") + 1] if "-m" in cmd else cmd[0]
 
 
+@contextmanager
+def holding(connect: Callable, job: str, source_id: int | None, *,
+            wait: bool = False) -> Iterator[bool]:
+    """The job's lock for this library: yields True while held.
+
+    Without ``wait``, yields False at once if another process holds it.
+    The lock lives on a connection of its own, outside any transaction,
+    and goes when that connection closes: on leaving this block, or with
+    the process if it dies.
+    """
+    conn = connect()
+    try:
+        conn.autocommit = True
+        key = (f"bookrs.schedule.{job}", source_id or 0)
+        got = conn.execute("SELECT pg_try_advisory_lock(hashtext(%s), %s::int)",
+                           key).fetchone()[0]
+        if not got and wait:
+            log.info("%s: waiting for the run already in progress to finish", job)
+            conn.execute("SELECT pg_advisory_lock(hashtext(%s), %s::int)", key)
+            got = True
+        yield got
+    finally:
+        conn.close()
+
+
 def run_once(connect: Callable, job: str, source_id: int | None, every: str,
-             cmds: list[list[str]], runner: Callable = subprocess.run) -> bool:
+             cmds: list[list[str]], runner: Callable = subprocess.run, *,
+             by_hand: bool = False) -> bool:
     """Run the commands once, recording the run. True if all succeeded.
 
-    The database connection is not held open while the commands run: a
-    read of sixteen million ratings takes minutes, and an idle connection
-    held that long is one the library's administrators did not plan for.
+    The connection that records the run is not held open while the
+    commands run: a read can take minutes. The lock's connection is
+    (holding), idle and outside any transaction.
     """
     with connect() as conn:
         run_id = conn.execute(
@@ -159,6 +207,8 @@ def run_once(connect: Callable, job: str, source_id: int | None, every: str,
         raise
     took = time.monotonic() - started
     detail = detail or f"done in {took:.0f}s"
+    if by_hand:
+        detail += ", run by hand"
     _finish(connect, run_id, ok, detail)
     (log.info if ok else log.error)("%s: %s", job, detail)
     return ok
@@ -180,15 +230,30 @@ def tick(connect: Callable, job: str, source_id: int | None, every_text: str,
     if every is None:
         return float("inf")
     now = now or (lambda: datetime.now(timezone.utc))
-    with connect() as conn:
-        due = next_due(last_run(conn, job, source_id), every)
-    wait = 0.0 if due is None else (due - now()).total_seconds()
-    if wait > 0:
-        log.info("%s: next run at %s (every %s)", job,
-                 due.astimezone().strftime("%Y-%m-%d %H:%M"), every_text)
-        return wait
-    run_once(connect, job, source_id, every_text, cmds, runner=runner)
+    with holding(connect, job, source_id) as held:
+        if not held:
+            log.info("%s: a run started by hand is in progress; looking "
+                     "again in a minute", job)
+            return BUSY_RETRY
+        # Read under the lock: a run by hand that has just finished
+        # counts, and this one waits its cadence after it.
+        with connect() as conn:
+            due = next_due(last_run(conn, job, source_id), every)
+        wait = 0.0 if due is None else (due - now()).total_seconds()
+        if wait > 0:
+            log.info("%s: next run at %s (every %s)", job,
+                     due.astimezone().strftime("%Y-%m-%d %H:%M"), every_text)
+            return wait
+        run_once(connect, job, source_id, every_text, cmds, runner=runner)
     return 0.0
+
+
+def run_now(connect: Callable, job: str, source_id: int | None, every_text: str,
+            cmds: list[list[str]], runner: Callable = subprocess.run) -> bool:
+    """Run the job once, now, after any run already in progress."""
+    with holding(connect, job, source_id, wait=True):
+        return run_once(connect, job, source_id, every_text, cmds,
+                        runner=runner, by_hand=True)
 
 
 def serve(connect: Callable, job: str, source_id: int | None, every_text: str,
@@ -216,6 +281,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("job", choices=JOBS)
     ap.add_argument("--every", default=None,
                     help="30m, 6h, 1d, 2w or off. Default: BOOKRS_<JOB>_EVERY.")
+    ap.add_argument("--now", action="store_true",
+                    help="Run the job once now, after any run in progress, "
+                         "and exit: 0 if it succeeded. No cadence needed.")
     ap.add_argument("--source-id", type=int, default=None,
                     help="The library's source. Default: BOOKRS_SOURCE_ID.")
     ap.add_argument("--signal", choices=("ratings", "loans"), default="ratings",
@@ -237,12 +305,13 @@ def main(argv: list[str] | None = None) -> int:
                         datefmt="%Y-%m-%d %H:%M:%S")
 
     every = a.every or os.environ.get(f"BOOKRS_{a.job.upper()}_EVERY", "")
-    if not every:
+    if not every and not a.now:
         ap.error(f"--every or BOOKRS_{a.job.upper()}_EVERY must be set")
-    try:
-        parse_every(every)
-    except ValueError as exc:
-        ap.error(str(exc))
+    if every:
+        try:
+            parse_every(every)
+        except ValueError as exc:
+            ap.error(str(exc))
     full_every = a.full_every or os.environ.get("BOOKRS_FULL_READ_EVERY") or "1d"
     try:
         parse_every(full_every)
@@ -273,9 +342,13 @@ def main(argv: list[str] | None = None) -> int:
     # run in progress is recorded as interrupted on the way out.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
-    serve(connect, a.job, source_id, every,
-          commands(a.job, source_id, signal_=a.signal, factors=a.factors,
-                   iterations=a.iterations, full_every=full_every))
+    cmds = commands(a.job, source_id, signal_=a.signal, factors=a.factors,
+                    iterations=a.iterations, full_every=full_every)
+    if a.now:
+        # Recorded with the cadence in force, so /health still says when
+        # the scheduler will next run it.
+        return 0 if run_now(connect, a.job, source_id, every or BY_HAND, cmds) else 1
+    serve(connect, a.job, source_id, every, cmds)
     return 0
 
 

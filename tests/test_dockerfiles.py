@@ -70,3 +70,13 @@ def test_service_images_carry_no_javascript_runtime():
             if "nodejs" in line and not line.strip().startswith("#")
         ]
         assert not installs, f"{name} installs a JavaScript runtime"
+
+
+def test_test_image_can_run_the_api_and_plugin_tests():
+    """Without the API's packages those files skip whole, and a green run
+    says nothing about the routes the OPAC calls."""
+    text = (DOCKER / "test.Dockerfile").read_text(encoding="utf-8")
+    runtime = text.split("COPY --from=build /install /usr/local", 1)[1]
+    assert "requirements-api.txt" in runtime
+    # Installed after the recommend packages, keeping their numpy.
+    assert "grep -v '^numpy=='" in runtime

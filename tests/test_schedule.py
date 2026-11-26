@@ -228,6 +228,104 @@ class TestTick:
         assert runner.calls == []
 
 
+class TestOneRunAtATime:
+    def test_a_scheduled_run_waits_while_one_started_by_hand_is_going(self, connect):
+        runner = _Runner(0)
+        with schedule.holding(connect, "read", 54) as held:
+            assert held
+            wait = schedule.tick(connect, "read", 54, "10m", [["a"]], runner=runner)
+        assert wait == schedule.BUSY_RETRY and runner.calls == [] and _rows(connect) == []
+
+    def test_the_lock_is_per_job_and_per_library(self, connect):
+        with schedule.holding(connect, "read", 54):
+            with schedule.holding(connect, "refit", 54) as other_job, \
+                    schedule.holding(connect, "read", 55) as other_library:
+                assert other_job and other_library
+            with schedule.holding(connect, "read", 54) as same:
+                assert not same
+
+    def test_the_lock_goes_when_the_run_ends_even_a_failed_one(self, connect):
+        assert not schedule.run_now(connect, "read", 54, "10m", [["a"]], runner=_Runner(3))
+        with schedule.holding(connect, "read", 54) as held:
+            assert held
+
+    def test_the_lock_goes_with_a_process_that_dies(self, connect):
+        """Nothing to clean up after a container is killed mid-run."""
+        import time
+        code = (f"import psycopg, time\n"
+                f"c = psycopg.connect({TEST_DATABASE_URL!r}, autocommit=True)\n"
+                f"c.execute(\"SELECT pg_advisory_lock(hashtext('bookrs.schedule.read'), 54)\")\n"
+                f"print('held', flush=True)\n"
+                f"time.sleep(60)\n")
+        child = subprocess.Popen([sys.executable, "-c", code],
+                                 stdout=subprocess.PIPE, text=True)
+        try:
+            assert child.stdout.readline().strip() == "held"
+            with schedule.holding(connect, "read", 54) as held:
+                assert not held
+        finally:
+            child.kill()
+            child.wait()
+        for _ in range(50):
+            with schedule.holding(connect, "read", 54) as held:
+                if held:
+                    break
+            time.sleep(0.1)
+        assert held
+
+    def test_by_hand_waits_for_the_run_in_progress_then_runs(self, connect):
+        import threading
+        runner, done = _Runner(0), threading.Event()
+        lock = schedule.holding(connect, "refit", 54)
+        assert lock.__enter__()
+        worker = threading.Thread(target=lambda: (
+            schedule.run_now(connect, "refit", 54, "1d", [["a"]], runner=runner),
+            done.set()))
+        worker.start()
+        try:
+            assert not done.wait(0.5) and runner.calls == []
+        finally:
+            lock.__exit__(None, None, None)
+        assert done.wait(10)
+        worker.join()
+        assert runner.calls == [["a"]]
+
+    def test_a_run_by_hand_counts_for_the_schedule(self, connect):
+        schedule.run_now(connect, "read", 54, "10m", [["a"]], runner=_Runner(0))
+        runner = _Runner(0)
+        wait = schedule.tick(connect, "read", 54, "10m", [["a"]], runner=runner)
+        assert runner.calls == [] and 0 < wait <= 600
+        ((job, source, every, finished, ok, detail),) = _rows(connect)
+        assert (every, finished, ok) == ("10m", True, True)
+        assert detail.endswith(", run by hand")
+
+
+class TestNowFromTheCommandLine:
+    def _main(self, monkeypatch, code, every=None):
+        monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
+        monkeypatch.delenv("BOOKRS_READ_EVERY", raising=False)
+        if every:
+            monkeypatch.setenv("BOOKRS_READ_EVERY", every)
+        monkeypatch.setattr(schedule.signal, "signal", lambda *a: None)
+        monkeypatch.setattr(schedule, "commands",
+                            lambda *a, **k: [[sys.executable, "-c", code]])
+        return schedule.main(["read", "--now", "--source-id", "54"])
+
+    def test_runs_once_and_exits_with_no_cadence_set(self, connect, monkeypatch):
+        assert self._main(monkeypatch, "pass") == 0
+        ((job, source, every, finished, ok, detail),) = _rows(connect)
+        assert (job, source, every, ok) == ("read", 54, schedule.BY_HAND, True)
+
+    def test_is_recorded_with_the_cadence_in_force(self, connect, monkeypatch):
+        """So /health still says when the scheduler runs it next."""
+        assert self._main(monkeypatch, "pass", every="10m") == 0
+        assert _rows(connect)[0][2] == "10m"
+
+    def test_a_failed_run_exits_non_zero(self, connect, monkeypatch):
+        assert self._main(monkeypatch, "raise SystemExit(3)") == 1
+        assert _rows(connect)[0][4] is False
+
+
 class TestHealth:
     def test_health_shows_each_jobs_last_run_and_when_it_is_next_due(self, connect, monkeypatch):
         pytest.importorskip("fastapi")

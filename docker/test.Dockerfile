@@ -42,6 +42,17 @@ WORKDIR /app
 
 COPY --from=build /install /usr/local
 
+# The API's packages too, so that its tests and the plugin's run here
+# instead of skipping whole files: until 26 November 2026 they did, and
+# only ever ran where every package happened to be installed. numpy is
+# left at the version above, the one the recommend image ships: the API
+# pins a newer one, and installing it would move the suite off the
+# service this image exists to mirror. onnxruntime accepts either.
+COPY requirements-api.txt .
+RUN grep -v '^numpy==' requirements-api.txt > /tmp/api.txt \
+ && pip install --no-cache-dir -r /tmp/api.txt \
+ && rm /tmp/api.txt requirements-api.txt
+
 COPY bookrs/ ./bookrs/
 COPY tests/ ./tests/
 COPY pytest.ini .

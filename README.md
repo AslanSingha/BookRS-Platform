@@ -440,7 +440,7 @@ one.
 
 | Job | Commands | Suggested cadence | Why |
 |---|---|---|---|
-| `read` | `python -m bookrs.ingestion.koha_db --source-id N`, then `python -m bookrs.ingestion.direct --source-id N --changes --full-every 1d` (ingestion image; needs `KOHA_DB_URL` and `BOOKRS_PATRON_SECRET`) | Every 10 minutes | Reads the catalogue, then the ratings and review flags changed since the last read, from Koha's database, read-only: seconds. Once a day it reads everything instead (12 minutes for 16 million ratings), which also catches ratings and reviews that were removed. A patron's new rating counts for their own recommendations as soon as it is read: their place in the model is computed from their ratings at each request |
+| `read` | `python -m bookrs.ingestion.koha_db --source-id N`, then `python -m bookrs.ingestion.direct --source-id N --changes --full-every 1d` (ingestion image; needs `KOHA_DB_URL` and `BOOKRS_PATRON_SECRET`) | Every 10 minutes | Reads the catalogue, then the ratings and review flags changed since the last read, from Koha's database, read-only; the ratings part takes seconds. Once a day it reads everything instead (12 minutes for 16 million ratings), which also catches ratings and reviews that were removed. A patron's new rating counts for their own recommendations as soon as it is read: their place in the model is computed from their ratings at each request |
 | `embed` | `python -m bookrs.embedding.cli --source-id N` (embedding image) | After each read | Only new or changed records are encoded, so this is usually seconds |
 | `refit` | `python -m bookrs.recommend.cli --source-id N --signal ratings --factors 128 --iterations 10` (recommend image) | Daily or weekly | Relearns every book's factors from all ratings: everyone's results shift, including patrons who did nothing. One new rating does not change the shape of a factor space, so this needs a slower cadence than the read |
 
@@ -483,6 +483,41 @@ so restarting a container does not run everything again and a failed
 weekly refit is retried the same day. After changing a cadence in
 `.env`, run `docker compose --profile schedule up -d` again.
 
+To run a job now rather than wait for it, in its running container:
+
+```bash
+docker compose exec schedule-read  python -m bookrs.schedule read  --now
+docker compose exec schedule-refit python -m bookrs.schedule refit --now
+```
+
+A run by hand is recorded like any other, so the next scheduled run is
+one cadence after it. Two runs of one job never overlap: `--now` waits
+for a run in progress to finish first, and a scheduled run that finds
+one started by hand looks again a minute later.
+
+### Seeing it update
+
+What a patron sees changes as the library's data does, and nothing has
+to be restarted. With the scheduler running:
+
+1. In Koha's staff interface, add a patron (Patrons → New patron) with
+   an OPAC username and password.
+2. Log in to the OPAC as them. The homepage shows **Popular in this
+   library**, with the note that they have not rated any books yet.
+3. Rate three books with the stars on their record pages.
+4. Read them: `docker compose exec schedule-read python -m bookrs.schedule read --now`,
+   or wait for the next scheduled read. The log reports `3 ratings given
+   or changed`.
+5. Reload the homepage: **Recommended for you**, *based on your 3
+   ratings so far*. No refit happened: a patron's place among the books
+   is computed from their ratings at each request.
+6. Rate two more and read again: the list changes, and from five
+   ratings the note reads *Based on your 5 ratings*.
+7. Retrain: `docker compose exec schedule-refit python -m bookrs.schedule refit --now`.
+   Every book's factors are relearned from all ratings, the new
+   patron's included. The API picks up the new factors at its next
+   request, and `/health` shows the run under `jobs`.
+
 ### Or the host's cron
 
 A library that already monitors its cron jobs can schedule the same
@@ -524,6 +559,10 @@ do not. The OPAC widget is JavaScript, and its tests drive it through a
 stub DOM to check what a patron actually sees — which needs a JavaScript
 runtime that a Python service has no business shipping. Rather than add
 one to a production image, the test environment is its own image.
+
+The image carries the API's packages too, so the API's tests and the
+Koha plugin's run there as well: nothing should be reported skipped.
+`python -m pytest -rs` names any test that is, and why.
 
 Running the suite in a service image instead is not an error, but the
 widget tests will skip there, and a skipped test is not a passing one.
