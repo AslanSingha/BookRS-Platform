@@ -237,6 +237,10 @@ services:
       # this project deliberately does not automate. Unmounted, that
       # guard skipped, which is a guard reporting nothing.
       - ./README.md:/app/README.md:ro
+      # And compose.yaml, which a test reads for the scheduler's settings,
+      # and the Koha plugin, whose Perl controller a test drives.
+      - ./compose.yaml:/app/compose.yaml:ro
+      - ./koha-plugin:/app/koha-plugin:ro
 
 volumes:
   db-data:

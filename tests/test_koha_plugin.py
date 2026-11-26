@@ -8,9 +8,9 @@ back therefore proves the Perl hash and the Python hash agree -- the
 one thing that, if wrong, would fail silently: every patron would look
 like a stranger and get the most-rated list.
 
-Skipped where Perl's Mojolicious is not installed (it is not in the
-test image). It is in Koha's own image; see the plugin section of the
-README for running it there.
+Skipped where Perl's Mojolicious is not installed. The test image has
+it (docker/test.Dockerfile), as Koha's own image does; see the plugin
+section of the README for running it there.
 """
 
 import json

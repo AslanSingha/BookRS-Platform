@@ -80,3 +80,19 @@ def test_test_image_can_run_the_api_and_plugin_tests():
     assert "requirements-api.txt" in runtime
     # Installed after the recommend packages, keeping their numpy.
     assert "grep -v '^numpy=='" in runtime
+
+
+def test_test_image_can_run_the_koha_plugins_perl():
+    """The plugin's test drives its Perl controller and skips without
+    Mojolicious: until 26 November 2026 it skipped in every test run."""
+    text = (DOCKER / "test.Dockerfile").read_text(encoding="utf-8")
+    assert "libmojolicious-perl" in text and "libmodern-perl-perl" in text
+
+
+def test_the_test_service_mounts_what_its_tests_read():
+    """A guard whose subject is not mounted skips, and reports nothing."""
+    compose = (DOCKER.parent / "compose.yaml").read_text(encoding="utf-8")
+    test_service = compose.split("\n  test:\n", 1)[1].split("\nvolumes:", 1)[0]
+    for mount in ("./bookrs:", "./tests:", "./docker:", "./README.md:",
+                  "./compose.yaml:", "./koha-plugin:"):
+        assert mount in test_service, mount

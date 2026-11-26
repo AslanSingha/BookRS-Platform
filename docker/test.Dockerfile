@@ -30,8 +30,15 @@ FROM python:3.12-slim
 # nodejs for the widget harness. Without --no-install-recommends this
 # pulls npm, which is the larger half of the install and buys nothing:
 # the harness deliberately has no package dependencies.
+#
+# Mojolicious and Modern::Perl for the Koha plugin's test
+# (koha-plugin/t/controller.pl), which drives the plugin's real Perl
+# controller against this repository's API: the only test that proves
+# the Perl patron hash and the Python one agree. Koha's own image has
+# both; without them here the test skipped in every run but Koha's.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libgomp1 nodejs \
+      libmojolicious-perl libmodern-perl-perl \
  && rm -rf /var/lib/apt/lists/*
 
 ENV OPENBLAS_NUM_THREADS=1

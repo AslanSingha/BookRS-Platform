@@ -560,9 +560,9 @@ stub DOM to check what a patron actually sees — which needs a JavaScript
 runtime that a Python service has no business shipping. Rather than add
 one to a production image, the test environment is its own image.
 
-The image carries the API's packages too, so the API's tests and the
-Koha plugin's run there as well: nothing should be reported skipped.
-`python -m pytest -rs` names any test that is, and why.
+The image carries the API's packages and Perl's Mojolicious too, so the
+API's tests and the Koha plugin's run there as well: nothing should be
+reported skipped. `python -m pytest -rs` names any test that is, and why.
 
 Running the suite in a service image instead is not an error, but the
 widget tests will skip there, and a skipped test is not a passing one.
