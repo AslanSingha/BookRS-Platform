@@ -126,7 +126,7 @@ CHANGES_MARGIN = timedelta(minutes=10)
 #: More ratings changed than this and the read is a full one instead. A
 #: read of changes holds them in memory, which is right for the handful
 #: between reads every few minutes and wrong after a bulk load: the full
-#: UCSD catalogue added 26 million ratings at once. The full read streams.
+#: UCSD catalogue adds 13.9 million ratings at once. The full read streams.
 MAX_CHANGES = 200_000
 _PAIRS_PER_QUERY = 1_000
 

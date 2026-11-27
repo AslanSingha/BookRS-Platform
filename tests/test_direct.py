@@ -344,7 +344,7 @@ class TestReadingChanges:
         assert sum("IN (" in q for q, _ in lib.queries) == 3
 
     def test_more_changes_than_a_read_of_changes_holds_are_refused(self):
-        """After a bulk load (26 million new ratings with the full UCSD
+        """After a bulk load (13.9 million new ratings with the full UCSD
         catalogue) the read must not try to hold them all. It stops past
         the limit, and closes the library's cursor before the full read
         asks anything else."""

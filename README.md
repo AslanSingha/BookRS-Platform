@@ -537,8 +537,8 @@ docker compose --profile fixture run --rm fixture python tools/ucsd_full.py load
 
 Then the platform reads it. Start the scheduler and run each job once
 now, one after the other. Expect the read to take about half an hour
-(the 881,545 new records, then every rating, since 26 million changed at
-once), the embedding a little over an hour (about 200 books a second),
+(the 881,545 new records, then every rating, since 13.9 million changed
+at once), the embedding a little over an hour (about 200 books a second),
 and the refit some minutes.
 
 ```bash
@@ -580,6 +580,10 @@ to be restarted. With the scheduler running:
    Every book's factors are relearned from all ratings, the new
    patron's included. The API picks up the new factors within 30
    seconds, and `/health` shows the run under `jobs`.
+
+`tools/demo.sh` does the terminal side of this (`check`, `find`,
+`patron`, `list`, `read`, `refit`, `search`), and `docs/demo.md` is the
+run sheet for showing it.
 
 ### How quickly the API sees a change
 
