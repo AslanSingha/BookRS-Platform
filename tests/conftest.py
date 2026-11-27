@@ -16,6 +16,12 @@ import os
 
 import pytest
 
+# The API's caches ask the database what changed at most every 30 seconds
+# (bookrs/api/vectors.py). Tests change it between one request and the
+# next, so here they ask every time; tests of the interval set their own.
+# Set before any test module imports the API, which reads it.
+os.environ.setdefault("BOOKRS_CACHE_PROBE_SECONDS", "0")
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _migrate_test_database():
@@ -39,3 +45,17 @@ def _migrate_test_database():
     with psycopg.connect(dsn) as conn:
         apply_migrations(conn)
         conn.commit()
+
+
+@pytest.fixture(autouse=True)
+def _api_holds_nothing_yet():
+    """Each test starts with the API's vectors unloaded, as after a
+    restart. Held vectors outlive a test's data otherwise, and a reload
+    they then need runs in the background, after the test has asserted."""
+    try:
+        from bookrs.api import vectors
+    except ImportError:             # an image without the API's packages
+        yield
+        return
+    vectors.CATALOGUE = vectors.CatalogueVectors()
+    yield

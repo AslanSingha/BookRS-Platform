@@ -13,6 +13,7 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("fastapi")
 pytest.importorskip("psycopg_pool")
 from fastapi.testclient import TestClient
+from bookrs.api import vectors
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 TOKEN = "shared-between-koha-and-bookrs"
@@ -181,7 +182,7 @@ def searchable(library, client, monkeypatch):
                 (w, near.get(w, [0.0, 0.0, 1.0])))
     from bookrs.api import main
     monkeypatch.setattr(main, "_get_encoder", lambda: _FakeEncoder())
-    main._query_vectors = type(main._query_vectors)()
+    vectors.CATALOGUE = vectors.CatalogueVectors()
     return sid, ids
 
 
@@ -271,7 +272,7 @@ class TestPersonalSearch:
         def boom():
             raise AssertionError("encoder loaded for an empty index")
         monkeypatch.setattr(main, "_get_encoder", boom)
-        main._query_vectors = type(main._query_vectors)()
+        vectors.CATALOGUE = vectors.CatalogueVectors()
         body = _search(client, sid).json()
         assert body["results"] == [] and body["method"] == "full"
 
@@ -287,7 +288,7 @@ class TestWarmStart:
         monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
         monkeypatch.setenv("BOOKRS_SERVICE_TOKEN", TOKEN)
         monkeypatch.setattr(main, "_get_encoder", encoder)
-        main._query_vectors = type(main._query_vectors)()
+        vectors.CATALOGUE = vectors.CatalogueVectors()
         main._spaces = main._SpaceCache()
         return main
 
@@ -307,7 +308,7 @@ class TestWarmStart:
         with TestClient(main.app):
             main.app.state.warm.join(timeout=10)
             assert loaded == ["encoder"]
-            assert main._query_vectors.matrix.shape[0] == len(ids)
+            assert len(vectors.CATALOGUE.snapshot) == len(ids)
             assert sid in main._spaces._spaces
 
     def test_an_empty_index_does_not_load_the_encoder(self, library, monkeypatch):

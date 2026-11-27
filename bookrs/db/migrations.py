@@ -229,6 +229,23 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ALTER TABLE items ADD COLUMN IF NOT EXISTS collection VARCHAR(80)",
         ),
     ),
+    Migration(
+        version=9,
+        description="indexes for the API's look at what changed: newest embedding, "
+                    "withdrawn works, latest refit",
+        statements=(
+            # The API asks every 30 seconds what changed (bookrs/api/vectors.py).
+            # Without these, max(created_at) reads every embedding, 1.4 GB at
+            # the full UCSD catalogue, and the withdrawn works are found by
+            # reading every work.
+            "CREATE INDEX IF NOT EXISTS embeddings_created_at_idx "
+            "ON embeddings (created_at)",
+            "CREATE INDEX IF NOT EXISTS works_withdrawn_idx "
+            "ON works (deleted_at) WHERE deleted_at IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS work_factors_trained_at_idx "
+            "ON work_factors (trained_at)",
+        ),
+    ),
 )
 
 _LEDGER = """

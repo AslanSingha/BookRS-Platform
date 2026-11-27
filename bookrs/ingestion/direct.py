@@ -123,6 +123,11 @@ _KOHA_REVIEWS_OF = """
 
 # How far before the recorded watermark a read of changes starts.
 CHANGES_MARGIN = timedelta(minutes=10)
+#: More ratings changed than this and the read is a full one instead. A
+#: read of changes holds them in memory, which is right for the handful
+#: between reads every few minutes and wrong after a bulk load: the full
+#: UCSD catalogue added 26 million ratings at once. The full read streams.
+MAX_CHANGES = 200_000
 _PAIRS_PER_QUERY = 1_000
 
 _BATCH = 50_000
@@ -197,7 +202,16 @@ def koha_clock(conn) -> datetime:
         return cur.fetchone()[0]
 
 
-def read_koha_changes(conn, pseudonym, since: datetime) -> tuple[list, list]:
+class TooManyChanges(Exception):
+    """More ratings changed than a read of changes should hold."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(f"more than {limit:,} ratings changed")
+        self.limit = limit
+
+
+def read_koha_changes(conn, pseudonym, since: datetime,
+                      limit: int | None = None) -> tuple[list, list]:
     """What changed in the library from ``since`` (Koha's clock) on.
 
     Returns ``(ratings, flagged)``. ``ratings`` are (patron_ref,
@@ -208,9 +222,19 @@ def read_koha_changes(conn, pseudonym, since: datetime) -> tuple[list, list]:
 
     Held in memory rather than streamed: between reads every few minutes
     a library's changes are a handful, and the review question needs
-    the whole list of pairs before it can be asked.
+    the whole list of pairs before it can be asked. More than ``limit``
+    (MAX_CHANGES) raise TooManyChanges, having held no more than that.
     """
-    changed = list(_stream(conn, _KOHA_RATINGS_SINCE, (since,)))
+    limit = MAX_CHANGES if limit is None else limit
+    changed = []
+    rows = _stream(conn, _KOHA_RATINGS_SINCE, (since,))
+    try:
+        for row in rows:
+            changed.append(row)
+            if len(changed) > limit:
+                raise TooManyChanges(limit)
+    finally:
+        rows.close()        # the library's cursor, before anything else asks
     pairs = [(borrower, biblio) for borrower, biblio, _, _ in changed]
     reviewed: set[tuple] = set()
     for i in range(0, len(pairs), _PAIRS_PER_QUERY):
@@ -559,10 +583,14 @@ def main() -> int:
             started = koha_clock(koha)
             if mode == "changes":
                 since = watermark - CHANGES_MARGIN
-                ratings, flagged = read_koha_changes(koha, pseudonym, since)
-                stats = store_changes(conn, a.source_id, ratings, flagged,
-                                      watermark=started)
-            else:
+                try:
+                    ratings, flagged = read_koha_changes(koha, pseudonym, since)
+                except TooManyChanges as exc:
+                    mode = f"full: {exc} since the last read"
+                else:
+                    stats = store_changes(conn, a.source_id, ratings, flagged,
+                                          watermark=started)
+            if mode != "changes":
                 if a.changes:
                     log.info("reading everything (%s)", mode.split(": ", 1)[1])
                 try:

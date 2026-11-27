@@ -96,10 +96,15 @@ class Recommendation:
 
 def load_space(conn, source_id: int) -> FactorSpace:
     """The stored factors for one library's works, editions grouped."""
-    rows = conn.execute(
-        "SELECT f.work_id, f.raw_vector, f.n_patrons, w.title, w.authors "
-        "FROM work_factors f JOIN works w ON w.id = f.work_id "
-        "WHERE w.source_id = %s AND w.deleted_at IS NULL", (source_id,)).fetchall()
+    from bookrs.db.arrays import vector_cursor
+
+    # The factors arrive as float32 arrays rather than Python floats:
+    # up to 142,000 books of 128 factors at the full UCSD catalogue.
+    with vector_cursor(conn) as cur:
+        rows = cur.execute(
+            "SELECT f.work_id, f.raw_vector, f.n_patrons, w.title, w.authors "
+            "FROM work_factors f JOIN works w ON w.id = f.work_id "
+            "WHERE w.source_id = %s AND w.deleted_at IS NULL", (source_id,)).fetchall()
     space = FactorSpace.from_rows([r[:3] for r in rows])
     keys = {r[0]: work_key(r[3], r[4]) for r in rows}
     return space.with_groups([keys.get(int(w), str(w)) for w in space.work_ids])

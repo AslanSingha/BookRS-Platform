@@ -9,10 +9,14 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
 import psycopg
+
+from bookrs.api import vectors
+from bookrs.db.arrays import vector_cursor
 
 # word_similarity, not similarity. Plain trigram similarity divides by
 # the union of trigrams, so a short query against a long field scores
@@ -288,66 +292,14 @@ def source_breakdown(conn: psycopg.Connection) -> list[dict]:
     ]
 
 
-class _VectorCache:
-    """Holds the embedding matrix in process.
-
-    Fetching 5,284 vectors from PostgreSQL costs 432 ms; the dot product
-    against them costs 1 ms. Without a cache the database round trip is
-    98% of every similarity request.
-
-    Invalidated by comparing a cheap probe -- row count and the latest
-    created_at -- rather than by a signal from the embedding service,
-    which runs in a different container and may not be running at all.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._probe: tuple | None = None
-        self._ids: list[int] = []
-        self._matrix: np.ndarray | None = None
-        self._title_only: np.ndarray = np.zeros(0, dtype=bool)
-        self._sources: np.ndarray = np.zeros(0, dtype=np.int32)
-
-    def get(self, conn: psycopg.Connection) -> tuple[list[int], np.ndarray]:
-        probe = conn.execute(
-            "SELECT count(*), max(created_at) FROM embeddings"
-        ).fetchone()
-        with self._lock:
-            if probe != self._probe or self._matrix is None:
-                rows = conn.execute(
-                    """
-                    SELECT e.work_id, e.vector, e.is_title_only, w.source_id
-                    FROM embeddings e JOIN works w ON w.id = e.work_id
-                    WHERE w.deleted_at IS NULL
-                    ORDER BY e.work_id
-                    """
-                ).fetchall()
-                self._ids = [r[0] for r in rows]
-                self._title_only = np.array([r[2] for r in rows], dtype=bool)
-                self._sources = np.array([r[3] for r in rows], dtype=np.int32)
-                self._matrix = np.asarray([r[1] for r in rows], dtype=np.float32)
-                self._probe = probe
-            return self._ids, self._matrix
-
-    @property
-    def title_only_mask(self) -> np.ndarray:
-        return self._title_only
-
-    @property
-    def source_ids(self) -> np.ndarray:
-        return self._sources
-
-
-VECTORS = _VectorCache()
-
-
 class _FactorCache:
-    """Holds the ALS factors in process, on the vector cache's pattern.
+    """Holds the ALS factors in process, as the vectors are held.
 
     Far smaller than the embedding matrix -- factors cover only the
-    works with enough co-borrowing to factorise, which was 6.9% of the
-    reference corpus -- but fetched on the same terms, because the
-    ranker needs both matrices for every request.
+    works with enough readers to factorise -- but needed by every
+    similar-books request, so held on the same terms: the database is
+    asked whether a refit happened at most once every
+    BOOKRS_CACHE_PROBE_SECONDS.
 
     Probed on row count and the training timestamp. A refit rewrites
     every row, and factors from two different runs are not comparable:
@@ -355,29 +307,34 @@ class _FactorCache:
     space with no error to notice.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, probe_every: float | None = None) -> None:
+        self.probe_every = (vectors.probe_seconds() if probe_every is None
+                            else probe_every)
         self._lock = threading.Lock()
         self._probe: tuple | None = None
+        self._looked_at = float("-inf")
         self._factors: dict[int, tuple[np.ndarray, int]] = {}
         self._signal: str | None = None
 
     def get(self, conn: psycopg.Connection) -> dict[int, tuple[np.ndarray, int]]:
+        if (self._probe is not None
+                and time.monotonic() - self._looked_at < self.probe_every):
+            return self._factors
         probe = conn.execute(
             "SELECT count(*), max(trained_at) FROM work_factors"
         ).fetchone()
         with self._lock:
+            self._looked_at = time.monotonic()
             if probe != self._probe:
-                rows = conn.execute(
-                    """
-                    SELECT f.work_id, f.vector, f.n_patrons, f.signal
-                    FROM work_factors f JOIN works w ON w.id = f.work_id
-                    WHERE w.deleted_at IS NULL
-                    """
-                ).fetchall()
-                self._factors = {
-                    r[0]: (np.asarray(r[1], dtype=np.float32), r[2])
-                    for r in rows
-                }
+                with vector_cursor(conn) as cur:
+                    rows = cur.execute(
+                        """
+                        SELECT f.work_id, f.vector, f.n_patrons, f.signal
+                        FROM work_factors f JOIN works w ON w.id = f.work_id
+                        WHERE w.deleted_at IS NULL
+                        """
+                    ).fetchall()
+                self._factors = {r[0]: (r[1], r[2]) for r in rows}
                 # A refit writes every row from one signal. Anything else
                 # -- rows from before migration 5, or a mixture -- says
                 # nothing reliable about what the evidence is.
@@ -426,17 +383,19 @@ def similar_works(conn: psycopg.Connection, work_id: int, limit: int = 10,
         return []
     query_source = probe[1]
 
-    ids, matrix = VECTORS.get(conn)
-    if matrix is None or not len(ids):
+    held = vectors.CATALOGUE.get(conn)
+    query = np.asarray(probe[0], dtype=np.float32)
+    if not len(held) or held.dimensions != len(query):
         return []
 
-    scores = matrix @ np.asarray(probe[0], dtype=np.float32)
+    scores = held.matrix @ query
 
     # Exclusions must remove candidates, not merely de-rank them.
     # Assigning a low score works only while there are more candidates
     # than the limit: with fewer, argpartition returns every index
     # including the ones scored -1, and the excluded works reappear.
-    keep = np.array([wid != work_id for wid in ids])
+    # A book withdrawn from the catalogue is excluded the same way.
+    keep = held.live & (held.ids != work_id)
     # Scoped to the querying work's own catalogue. A deployment harvests
     # one library, so this changes nothing there -- but where several
     # sources share a database, an unscoped search returns another
@@ -444,13 +403,13 @@ def similar_works(conn: psycopg.Connection, work_id: int, limit: int = 10,
     # catalogue", and links them with the wrong system's URL pattern.
     # Opt out with cross_source for a deliberately federated view.
     if not cross_source:
-        keep &= (VECTORS.source_ids == query_source)
+        keep &= (held.source_ids == query_source)
     if exclude_title_only:
-        keep &= ~VECTORS.title_only_mask
+        keep &= ~held.title_only
     if not keep.any():
         return []
 
-    kept_ids = [wid for wid, k in zip(ids, keep) if k]
+    kept_ids = held.ids[keep]
     kept_scores = scores[keep]
 
     # Retrieve a pool by content, then let circulation re-order it.
@@ -466,10 +425,10 @@ def similar_works(conn: psycopg.Connection, work_id: int, limit: int = 10,
     factors = FACTORS.get(conn)
     candidates = [
         Candidate(
-            work_id=kept_ids[i],
+            work_id=int(kept_ids[i]),
             content_score=float(kept_scores[i]),
-            factors=factors.get(kept_ids[i], (None, 0))[0],
-            n_patrons=factors.get(kept_ids[i], (None, 0))[1],
+            factors=factors.get(int(kept_ids[i]), (None, 0))[0],
+            n_patrons=factors.get(int(kept_ids[i]), (None, 0))[1],
         )
         for i in top
     ]

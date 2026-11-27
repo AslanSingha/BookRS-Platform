@@ -103,6 +103,18 @@ class TestOutcome:
                         "catalogue_full_read_at": "timestamp with time zone",
                         "collection": "character varying"}
 
+    def test_the_api_s_look_at_what_changed_is_answered_from_indexes(self, conn):
+        """bookrs/api/vectors.py asks every 30 seconds for the newest
+        embedding, the withdrawn works and the latest refit. Without
+        these it would read every embedding to answer."""
+        apply_migrations(conn)
+        names = {r[0] for r in conn.execute(
+            "SELECT indexname FROM pg_indexes WHERE indexname IN "
+            "('embeddings_created_at_idx', 'works_withdrawn_idx', "
+            "'work_factors_trained_at_idx')").fetchall()}
+        assert names == {"embeddings_created_at_idx", "works_withdrawn_idx",
+                         "work_factors_trained_at_idx"}
+
     def test_sources_record_where_the_last_ratings_read_reached(self, conn):
         """The watermark keeps Koha's clock as Koha gave it: no zone, so
         nothing converts it between the library's clock and this one."""

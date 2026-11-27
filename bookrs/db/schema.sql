@@ -152,6 +152,9 @@ CREATE INDEX works_isbns_idx     ON works USING GIN (isbns);
 CREATE INDEX works_subjects_idx  ON works USING GIN (subjects);
 CREATE INDEX works_authors_idx   ON works USING GIN (authors);
 CREATE INDEX works_source_idx    ON works (source_id) WHERE deleted_at IS NULL;
+-- The works withdrawn from the catalogue, which the API masks
+-- (migration 9).
+CREATE INDEX works_withdrawn_idx ON works (deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- ---------------------------------------------------------------
 -- items: the physical copy.
@@ -258,6 +261,9 @@ CREATE INDEX embeddings_staleness_idx
     ON embeddings (model, embedder_version, source_hash);
 CREATE INDEX embeddings_title_only_idx
     ON embeddings (is_title_only) WHERE is_title_only;
+-- The API's look at what changed (migration 9, bookrs/api/vectors.py):
+-- the newest embedding, without reading them all.
+CREATE INDEX embeddings_created_at_idx ON embeddings (created_at);
 
 -- ---------------------------------------------------------------
 -- Search indexes.
@@ -382,6 +388,8 @@ CREATE TABLE work_factors (
 );
 
 CREATE INDEX work_factors_version_idx ON work_factors (factoriser_version);
+-- The latest refit, which the API checks for (migration 9).
+CREATE INDEX work_factors_trained_at_idx ON work_factors (trained_at);
 
 -- ---------------------------------------------------------------------
 -- job_runs: what the built-in scheduler ran (bookrs/schedule.py).

@@ -254,6 +254,7 @@ class _Library:
         self.ratings = {(b, r): (v, t) for b, r, v, t in ratings}
         self.reviews = list(reviews)        # (borrower, record, datereviewed)
         self.queries = []
+        self.open_cursors = 0
 
     def rate(self, borrower, record, value, at):
         self.ratings[(borrower, record)] = (value, at)
@@ -270,9 +271,11 @@ class _LibraryCursor:
         self.lib, self.rows = library, []
 
     def __enter__(self):
+        self.lib.open_cursors += 1
         return self
 
     def __exit__(self, *exc):
+        self.lib.open_cursors -= 1
         return False
 
     def execute(self, sql, params=None):
@@ -339,6 +342,22 @@ class TestReadingChanges:
         lib = _Library(K0, ratings=[(b, 1, 4, K0) for b in range(5)])
         direct.read_koha_changes(lib, _Pseudonymiser("s"), K0 - MIN)
         assert sum("IN (" in q for q, _ in lib.queries) == 3
+
+    def test_more_changes_than_a_read_of_changes_holds_are_refused(self):
+        """After a bulk load (26 million new ratings with the full UCSD
+        catalogue) the read must not try to hold them all. It stops past
+        the limit, and closes the library's cursor before the full read
+        asks anything else."""
+        lib = _Library(K0, ratings=[(b, 1, 4, K0) for b in range(5)])
+        with pytest.raises(direct.TooManyChanges):
+            direct.read_koha_changes(lib, _Pseudonymiser("s"), K0 - MIN, limit=3)
+        assert lib.open_cursors == 0
+        assert not any("IN (" in q for q, _ in lib.queries)
+
+    def test_up_to_the_limit_is_an_ordinary_read_of_changes(self):
+        lib = _Library(K0, ratings=[(b, 1, 4, K0) for b in range(3)])
+        ratings, _ = direct.read_koha_changes(lib, _Pseudonymiser("s"), K0 - MIN, limit=3)
+        assert len(ratings) == 3
 
     def test_no_changes_ask_no_review_question(self):
         lib = _Library(K0)
@@ -514,6 +533,23 @@ class TestTheCommand:
         conn.commit()
         self._run(monkeypatch, lib, "--changes", "--full-every", "1d")
         assert len(_stored(conn, self.sid)) == 1                  # the full read
+
+    def test_a_bulk_load_is_read_whole_instead(self, conn, monkeypatch, caplog):
+        import logging
+        self.sid = _library(conn)
+        lib = _Library(K0, ratings=[(7, 1, 4, K0 - 600 * MIN)])
+        self._run(monkeypatch, lib, "--changes")                  # first: full
+        lib.now = K0 + 10 * MIN
+        lib.rate(8, 2, 5, K0 + 2 * MIN)
+        lib.rate(9, 3, 3, K0 + 3 * MIN)
+        monkeypatch.setattr(direct, "MAX_CHANGES", 1)
+        with caplog.at_level(logging.INFO, logger="bookrs.ingestion.direct"):
+            assert self._run(monkeypatch, lib, "--changes") == 0
+        assert "reading everything (more than 1 ratings changed since the last read)" \
+            in caplog.text
+        assert len(_stored(conn, self.sid)) == 3
+        assert sum(q == _norm(direct._KOHA_RATINGS) for q, _ in lib.queries) == 2
+        assert direct.read_state(conn, self.sid)[0] == K0 + 10 * MIN
 
     def test_a_bad_full_every_is_refused_before_koha_is_asked(self, conn, monkeypatch):
         self.sid = _library(conn)

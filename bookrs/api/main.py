@@ -24,7 +24,7 @@ from psycopg_pool import ConnectionPool
 
 from fastapi.responses import FileResponse
 
-from bookrs.api import queries
+from bookrs.api import queries, vectors
 from bookrs.db.migrations import apply_migrations
 
 _STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -78,6 +78,10 @@ async def lifespan(app: FastAPI):
             log.info("applied schema migrations: %s",
                      ", ".join(str(v) for v in applied))
 
+    # A full reload of the vectors, when one is needed, runs on its own
+    # connection in the background while the vectors held keep answering.
+    vectors.CATALOGUE.connect = pool.connection
+
     # In the background: the service answers at once, and a request that
     # arrives while the caches fill mostly waits for the same load rather
     # than starting its own.
@@ -86,6 +90,7 @@ async def lifespan(app: FastAPI):
     app.state.warm = warm
 
     yield
+    vectors.CATALOGUE.connect = None
     warm.join(timeout=10)
     pool.close()
 
@@ -108,9 +113,9 @@ def _warm_caches() -> None:
     try:
         with pool.connection() as conn:
             step = time.monotonic()
-            vectors = _query_vectors.get(conn)
+            held = vectors.CATALOGUE.get(conn)
             log.info("warm: %d catalogue vectors in %.1fs",
-                     vectors.matrix.shape[0], time.monotonic() - step)
+                     len(held), time.monotonic() - step)
 
             step = time.monotonic()
             sources = [r[0] for r in conn.execute(
@@ -122,11 +127,10 @@ def _warm_caches() -> None:
                      len(sources), time.monotonic() - step)
 
             step = time.monotonic()
-            queries.VECTORS.get(conn)
             queries.FACTORS.get(conn)
-            log.info("warm: similar-books caches in %.1fs", time.monotonic() - step)
+            log.info("warm: similar-books factors in %.1fs", time.monotonic() - step)
 
-        if vectors.matrix.shape[0]:        # an empty index never needs it
+        if len(held):                       # an empty index never needs it
             step = time.monotonic()
             _get_encoder()
             log.info("warm: query encoder in %.1fs", time.monotonic() - step)
@@ -258,7 +262,7 @@ def health() -> dict:
     pilot, not before.
     """
     with pool.connection() as conn:
-        works, items, vectors = conn.execute(
+        works, items, embedded = conn.execute(
             "SELECT (SELECT count(*) FROM works WHERE deleted_at IS NULL),"
             "       (SELECT count(*) FROM items),"
             "       (SELECT count(*) FROM embeddings)"
@@ -279,12 +283,18 @@ def health() -> dict:
             "started_at, finished_at, ok, detail "
             "FROM job_runs ORDER BY job, source_id, started_at DESC"
         ).fetchall()
+    held = vectors.CATALOGUE.snapshot
     return {
         "status": "ok",
         "works": works,
         "items": items,
-        "embeddings": vectors,
-        "unembedded": works - vectors,
+        "embeddings": embedded,
+        "unembedded": works - embedded,
+        # The embeddings this process holds to search and compare with
+        # (bookrs/api/vectors.py): they catch up with "embeddings" within
+        # BOOKRS_CACHE_PROBE_SECONDS of a request. null until first loaded.
+        "vectors_held": len(held) if held is not None else None,
+        "vectors_reloading": vectors.CATALOGUE.reloading,
         "last_harvest": last.isoformat() if last else None,
         "factorised_works": factors,
         "last_factorised": trained.isoformat() if trained else None,
@@ -516,47 +526,6 @@ def _get_encoder() -> OnnxEncoder:
     return _encoder
 
 
-class _QueryVectors:
-    """Catalogue vectors held in process, reloaded when embeddings change.
-
-    The reload key is (count, max(created_at)) on the embeddings table:
-    cheap to check on every request and it changes on every embedding
-    run, which is the only time the matrix can go stale.
-    """
-
-    def __init__(self) -> None:
-        self._key = None
-        self._lock = threading.Lock()
-        self.ids = np.zeros(0, dtype=np.int64)
-        self.matrix = np.zeros((0, 384), dtype=np.float32)
-        self.title_only = np.zeros(0, dtype=bool)
-        self.source_ids = np.zeros(0, dtype=np.int64)
-
-    def get(self, conn: psycopg.Connection) -> "_QueryVectors":
-        key = conn.execute(
-            "SELECT count(*), max(created_at) FROM embeddings"
-        ).fetchone()
-        if key != self._key:
-            with self._lock:
-                if key != self._key:
-                    rows = conn.execute(
-                        "SELECT e.work_id, e.vector, e.is_title_only, w.source_id "
-                        "FROM embeddings e JOIN works w ON w.id = e.work_id "
-                        "WHERE w.deleted_at IS NULL ORDER BY e.work_id"
-                    ).fetchall()
-                    self.ids = np.array([r[0] for r in rows], dtype=np.int64)
-                    self.matrix = (np.array([r[1] for r in rows], dtype=np.float32)
-                                   if rows else np.zeros((0, 384), dtype=np.float32))
-                    self.title_only = np.array([r[2] for r in rows], dtype=bool)
-                    self.source_ids = np.array([r[3] for r in rows], dtype=np.int64)
-                    self._key = key
-                    log.info("query vectors loaded: %d works", len(rows))
-        return self
-
-
-_query_vectors = _QueryVectors()
-
-
 @app.get("/search/semantic")
 def search_semantic(
     q: str = Query(..., min_length=2, max_length=300),
@@ -594,13 +563,17 @@ def _semantic_candidates(conn, q: str, k: int, source_id: int | None = None,
     the same books for the same words and differ only in their order.
     An empty index answers before the encoder is loaded.
     """
-    v = _query_vectors.get(conn)
-    n = v.matrix.shape[0]
-    if n == 0:
+    v = vectors.CATALOGUE.get(conn)
+    if len(v) == 0 or not v.live.any():
         return []
     qv = _get_encoder().encode([q])[0]
+    if len(qv) != v.dimensions:
+        log.warning("the query encoder gives %d numbers and the catalogue's "
+                    "vectors have %d: embed the catalogue again with this model",
+                    len(qv), v.dimensions)
+        return []
     scores = v.matrix @ qv
-    mask = np.ones(n, dtype=bool)
+    mask = v.live.copy()            # a book withdrawn from the catalogue: never
     if source_id is not None:
         mask &= v.source_ids == source_id
     if exclude_title_only:
@@ -689,27 +662,37 @@ class _SpaceCache:
     """Each library's factor space, rebuilt only after a refit.
 
     Building it reads every work's factors, which is cheap for 2,000
-    works and not for 125,000; a patron's request should not pay that.
+    works and not for the 142,000 the full UCSD catalogue has ratings
+    for; a patron's request should not pay that.
+    Whether a refit happened is asked at most once every
+    BOOKRS_CACHE_PROBE_SECONDS. A refit rewrites every library's rows,
+    so one look covers them all.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, probe_every: float | None = None) -> None:
+        self.probe_every = (vectors.probe_seconds() if probe_every is None
+                            else probe_every)
         self._spaces: dict[int, tuple[tuple, object]] = {}
+        self._stamp: tuple | None = None
+        self._looked_at = float("-inf")
 
     def get(self, conn: psycopg.Connection, source_id: int):
         from bookrs.recommend.personal import load_space
 
-        stamp = tuple(conn.execute(
-            "SELECT count(*), max(f.trained_at) FROM work_factors f "
-            "JOIN works w ON w.id = f.work_id WHERE w.source_id = %s",
-            (source_id,)).fetchone())
+        now = time.monotonic()
+        if self._stamp is None or now - self._looked_at >= self.probe_every:
+            self._stamp = tuple(conn.execute(
+                "SELECT count(*), max(trained_at) FROM work_factors").fetchone())
+            self._looked_at = now
+        stamp = self._stamp
         if not stamp[0]:
             return None
         cached = self._spaces.get(source_id)
         if cached is None or cached[0] != stamp:
             try:
                 space = load_space(conn, source_id)
-            except ValueError:          # factors from before migration 4
-                return None
+            except ValueError:          # none for this library, or from before migration 4
+                space = None
             self._spaces[source_id] = (stamp, space)
         return self._spaces[source_id][1]
 

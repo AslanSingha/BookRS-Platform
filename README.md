@@ -465,7 +465,9 @@ BOOKRS_REFIT_EVERY=1d
 
 Between full reads, `read` asks Koha only for what changed since the
 last read, by Koha's own clock (`bookrs/ingestion/direct.py` explains
-the margin and what only a full read can see).
+the margin and what only a full read can see). A read of changes that
+finds more than 200,000 changed ratings, as after a bulk load, reads
+everything instead.
 
 then start, follow and stop it:
 
@@ -533,6 +535,22 @@ docker compose --profile fixture run --rm fixture python tools/ucsd_full.py load
 docker compose --profile fixture run --rm fixture python tools/ucsd_full.py load
 ```
 
+Then the platform reads it. Start the scheduler and run each job once
+now, one after the other. Expect the read to take about half an hour
+(the 881,545 new records, then every rating, since 26 million changed at
+once), the embedding a little over an hour (about 200 books a second),
+and the refit some minutes.
+
+```bash
+docker compose --profile schedule up -d
+docker compose exec schedule-read  python -m bookrs.schedule read  --now
+docker compose exec schedule-embed python -m bookrs.schedule embed --now
+docker compose exec schedule-refit python -m bookrs.schedule refit --now
+```
+
+The API needs no restart: it takes in the new books while they are
+embedded (see "How quickly the API sees a change" below).
+
 Never pass `-d` to `bulkmarcimport.pl`: it deletes every record in Koha
 first. A chunk that stopped part-way is not imported again (its first
 records would be doubled): `ucsd_full.py marc --missing-only` writes the
@@ -560,8 +578,29 @@ to be restarted. With the scheduler running:
    ratings the note reads *Based on your 5 ratings*.
 7. Retrain: `docker compose exec schedule-refit python -m bookrs.schedule refit --now`.
    Every book's factors are relearned from all ratings, the new
-   patron's included. The API picks up the new factors at its next
-   request, and `/health` shows the run under `jobs`.
+   patron's included. The API picks up the new factors within 30
+   seconds, and `/health` shows the run under `jobs`.
+
+### How quickly the API sees a change
+
+The API holds every book's embedding in memory, and the factors, to
+search and compare with: about 1.4 GB for the full UCSD catalogue. It
+asks the database what changed at most once every
+`BOOKRS_CACHE_PROBE_SECONDS` (30 by default), and takes in only that:
+
+- books embedded since its last look are added, or overwritten where
+  they are, so it keeps up during an embedding run;
+- books withdrawn from the catalogue are left out, and put back if they
+  return;
+- a refit's factors replace the old ones.
+
+It reloads every embedding only when rows have left the embeddings
+table, when the vectors change size (a new model), and once every
+`BOOKRS_VECTORS_FULL_RELOAD_HOURS` (24; 0 for never) as a safety net.
+That reload runs in the background while the vectors already held keep
+answering, and needs about twice the memory for that minute.
+`/health` shows `vectors_held` beside `embeddings`, and
+`vectors_reloading`.
 
 ### Or the host's cron
 
