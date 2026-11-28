@@ -40,8 +40,18 @@ because they have none.
   rather than being left out. One extra matrix, computed once.
 * *The thesis's stages* -- content below five ratings; from five,
   0.7 * content + 0.3 * folding-in; from twenty, 0.3 * content + 0.7.
+* *The platform's stages* -- what the OPAC serves
+  (``bookrs/recommend/personal.py``): below five ratings the rated-only
+  solve, with the ratings' real confidences; from five, the full solve.
 * *Best blend* -- alpha chosen per column on half the cold readers and
   scored, like every other row, on the other half.
+
+**Measures.** Beside the thesis's P@10, MRR and HR@10 (any held-out
+rating counts), the revised evaluation's (``revised.py``): P@10 with
+liked = rated 4 or 5, as a share of the best any model could reach;
+leave one out (one liked held-out book per reader); and genre match,
+the share of the top 10 in the genres of the books the reader has
+revealed so far, as a multiple of what a random list gets.
 
     docker compose run --rm recommend python -m bookrs.evaluation.coldstart --source-id 54
 """
@@ -57,6 +67,7 @@ import time
 import numpy as np
 from scipy.sparse import csr_matrix
 
+from bookrs.evaluation.revised import genre_match, load_genres, reader_genres, score_method
 from bookrs.evaluation.thesis import (
     CONFIDENCE, blend, content_scores, evaluate, fit, load, load_embeddings,
     restrict, slice_works, split,
@@ -159,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         data = restrict(load(conn, a.source_id,
                                  slice_works(conn, a.source_id, a.slice) if a.slice else None), a.min_ratings)
         vectors, n_vectors, model = load_embeddings(conn, a.source_id, data.works)
+        genre, genre_names = load_genres(conn, data.works)
     if not n_vectors:
         raise SystemExit(
             f"no content vectors for source {a.source_id}. Create them with:\n"
@@ -193,14 +205,26 @@ def main(argv: list[str] | None = None) -> int:
     log.info("ALS fitted without them in %.0fs", time.monotonic() - t0)
 
     popularity = np.bincount(data.i[warm], minlength=n_works).astype(np.float32)
-    target = csr_matrix((np.ones(int((held & ~warm).sum()), dtype=np.int8),
-                         (data.u[held & ~warm], data.i[held & ~warm])), shape=shape)
+    cold_held = held & ~warm
+    target = csr_matrix((np.ones(int(cold_held.sum()), dtype=np.int8),
+                         (data.u[cold_held], data.i[cold_held])), shape=shape)
+    cold_liked = cold_held & (data.r >= 4)
+    liked = csr_matrix((np.ones(int(cold_liked.sum()), dtype=np.int8),
+                        (data.u[cold_liked], data.i[cold_liked])), shape=shape)
+    # One liked held-out book per cold reader, for leave one out.
+    loo = np.full(n_readers, -1, dtype=np.int64)
+    lu, li = data.u[cold_liked], data.i[cold_liked]
+    pick = np.lexsort((rng.random(len(lu)), lu))
+    first_of = np.ones(len(pick), dtype=bool)
+    first_of[1:] = lu[pick][1:] != lu[pick][:-1]
+    loo[lu[pick][first_of]] = li[pick][first_of]
+    known = genre >= 0
+    share = (np.bincount(genre[known], minlength=len(genre_names)).astype(float)
+             / max(known.sum(), 1))
+    chunk = int(max(16, min(4096, 50_000_000 // max(n_works, 1))))
 
     results: dict[str, list] = {}
     chosen: list[float] = []
-
-    def record(name, s):
-        results.setdefault(name, []).append(s)
 
     for n in STEPS:
         shown = ~warm & (position < n)
@@ -218,15 +242,16 @@ def main(argv: list[str] | None = None) -> int:
         slot[rows] = np.arange(len(rows))
         x_thesis = fold_in(as_thesis[rows], book_f, a.regularization, None)
         x_full = fold_in(given[rows], book_f, a.regularization, gram)
+        # The platform: the rated-only solve with real confidences below
+        # five ratings, the full solve from five.
+        x_platform = (x_full if n >= 5 else
+                      fold_in(given[rows], book_f, a.regularization, None))
 
         def content(who):
             return content_scores(binary, count, vectors, who)
 
-        def cf_thesis(who):
-            return x_thesis[slot[who]] @ book_f.T
-
-        def cf_full(who):
-            return x_full[slot[who]] @ book_f.T
+        def folded(x):
+            return lambda who: x[slot[who]] @ book_f.T
 
         def mix(alpha, cf):
             if alpha == 0.0:
@@ -238,39 +263,68 @@ def main(argv: list[str] | None = None) -> int:
         def popular(who):
             return np.tile(popularity, (len(who), 1))
 
-        sweep = [evaluate(mix(al, cf_full), given, target, tuning).p10 for al in ALPHAS]
+        sweep = [evaluate(mix(al, folded(x_full)), given, target, tuning).p10
+                 for al in ALPHAS]
         best = ALPHAS[int(np.argmax(sweep))]
         chosen.append(best)
 
-        record("most-rated books", evaluate(popular, given, target, scored))
-        record("content only", evaluate(content, given, target, scored))
-        record("folding-in, as in the thesis", evaluate(cf_thesis, given, target, scored))
-        record("folding-in, full", evaluate(cf_full, given, target, scored))
-        record("the thesis's stages",
-               evaluate(mix(thesis_stage_alpha(n), cf_thesis), given, target, scored))
-        record("best blend, content + full folding-in",
-               evaluate(mix(best, cf_full), given, target, scored))
+        own = (reader_genres([binary[r].indices for r in scored], genre, len(genre_names))
+               if genre_names else [])
+        for name, rows_fn in (
+                ("most-rated books", popular),
+                ("content only", content),
+                ("folding-in, as in the thesis", folded(x_thesis)),
+                ("folding-in, full", folded(x_full)),
+                ("the thesis's stages", mix(thesis_stage_alpha(n), folded(x_thesis))),
+                ("the platform's stages", folded(x_platform)),
+                ("best blend, content + full folding-in", mix(best, folded(x_full)))):
+            m, top10 = score_method(name, rows_fn, scored, given, liked, target, loo, chunk)
+            if genre_names:
+                match, expected, _ = genre_match(top10, own, genre, share)
+                m.genre = {"match": match, "random": expected}
+            results.setdefault(name, []).append(m)
         log.info("%2d revealed: done (alpha %.1f chosen)", n, best)
 
     first = next(iter(results.values()))[0]
     head = f"{'ratings revealed':40}" + "".join(f"{n:>9}" for n in STEPS)
     out = [
         "", f"Cold start. Source {a.source_id}: {len(scored):,} readers the model was not "
-            f"trained on, each with a fixed set of held-out books to find "
-            f"(best possible P@10 {first.ceiling:.4f}).",
+            f"trained on, each with a fixed set of held-out books to find.",
         f"ALS k={a.factors}, lambda={a.regularization:g}, {a.iterations} iterations, "
         f"c = {a.confidence}. Vectors: {model}.",
     ]
-    for title, pick in (("P@10", lambda s: s.p10), ("MRR", lambda s: s.mrr),
-                        ("HR@10 (at least one found)", lambda s: s.hr10)):
-        out += ["", title, head]
-        out += [f"  {name:38}" + "".join(f"{pick(s):>9.4f}" for s in row)
-                for name, row in results.items()]
+
+    def table(title, pick):
+        rows = ["", title, head]
+        for name, row in results.items():
+            rows.append(f"  {name:38}" + "".join(
+                f"{v:>9.4f}" if np.isfinite(v := pick(m)) else f"{'-':>9}" for m in row))
+        return rows
+
+    def get(d, k):
+        return float(d.get(k, float("nan")))
+
+    out += table(f"P@10, any held-out rating (best possible "
+                 f"{get(first.heldout_any, 'ceiling'):.4f})",
+                 lambda m: get(m.heldout_any, "p10"))
+    out += table("MRR, any held-out rating", lambda m: get(m.heldout_any, "mrr"))
+    out += table("HR@10, any held-out rating (at least one found)",
+                 lambda m: get(m.heldout_any, "hr10"))
+    out += table(f"P@10, liked = 4 or 5, as a share of the best possible "
+                 f"({get(first.heldout_liked, 'ceiling'):.4f})",
+                 lambda m: get(m.heldout_liked, "of_ceiling"))
+    out += table("Leave one out: HR@10 (one liked held-out book in the top 10)",
+                 lambda m: get(m.loo, "hr10"))
+    if genre_names:
+        out += table("Genre match: share of the top 10 in the revealed books' genres, "
+                     "as a multiple of a random list",
+                     lambda m: get(m.genre, "match") / get(m.genre, "random"))
     out += ["", f"{'alpha chosen for the best blend':40}"
             + "".join(f"{al:>9.1f}" for al in chosen),
             f"{'alpha in the thesis at that stage':40}"
             + "".join(f"{thesis_stage_alpha(n):>9.1f}" for n in STEPS),
-            f"standard error on P@10 is about {first.p10_se:.4f} throughout."]
+            f"standard error on P@10 is about {get(first.heldout_any, 'p10_se'):.4f} "
+            "throughout."]
     print("\n".join(out))
     return 0
 

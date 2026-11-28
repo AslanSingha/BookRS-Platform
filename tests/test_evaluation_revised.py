@@ -117,8 +117,10 @@ class TestSimilarBooks:
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
 
-@pytest.fixture
-def library():
+def planted_library(per_reader: int = 14, n_readers: int = 400):
+    """A library with a structure planted in it: four genres of thirty
+    books, texts that cluster by genre, and readers who each rate books
+    of one genre only. Returns (connection, source id), or skips."""
     psycopg = pytest.importorskip("psycopg")
     pytest.importorskip("implicit")
     if not DATABASE_URL:
@@ -128,37 +130,42 @@ def library():
     except psycopg.OperationalError:
         pytest.skip("database not reachable")
     rng = np.random.default_rng(3)
-    genres, per_genre, n_readers = 4, 30, 400
-    with conn:
-        conn.execute("TRUNCATE sources RESTART IDENTITY CASCADE")
-        sid = conn.execute("INSERT INTO sources (name, base_url) VALUES ('k', 'mysql://k') "
-                           "RETURNING id").fetchone()[0]
-        centres = rng.normal(size=(genres, 16))
-        works = []
-        for g in range(genres):
-            for b in range(per_genre):
-                wid = conn.execute(
-                    "INSERT INTO works (source_id, source_record_id, title, content_hash, "
-                    "items_hash) VALUES (%s, %s, %s, 'c', 'i') RETURNING id",
-                    (sid, f"{g}-{b}", f"book {g}-{b}")).fetchone()[0]
-                conn.execute("INSERT INTO items (work_id, barcode, collection) "
-                             "VALUES (%s, %s, %s)", (wid, f"B{wid}", f"G{g}"))
-                v = centres[g] + 0.2 * rng.normal(size=16)
-                v = (v / np.linalg.norm(v)).astype(np.float32)
-                conn.execute("INSERT INTO embeddings (work_id, vector, dimensions, model, "
-                             "embedder_version, source_hash) VALUES (%s, %s, 16, 'm', 1, 'h')",
-                             (wid, v.tolist()))
-                works.append((wid, g))
-        by_genre = {g: [w for w, gg in works if gg == g] for g in range(genres)}
-        with conn.cursor() as cur:
-            with cur.copy("COPY ratings (source_id, patron_ref, work_id, rating, reviewed) "
-                          "FROM STDIN") as cp:
-                for reader in range(n_readers):
-                    g = reader % genres
-                    for w in rng.choice(by_genre[g], size=14, replace=False):
-                        cp.write_row((sid, f"p{reader:04d}", int(w),
-                                      int(rng.choice([3, 4, 5])), False))
-        conn.commit()
+    genres, per_genre = 4, 30
+    conn.execute("TRUNCATE sources RESTART IDENTITY CASCADE")
+    sid = conn.execute("INSERT INTO sources (name, base_url) VALUES ('k', 'mysql://k') "
+                       "RETURNING id").fetchone()[0]
+    centres = rng.normal(size=(genres, 16))
+    works = []
+    for g in range(genres):
+        for b in range(per_genre):
+            wid = conn.execute(
+                "INSERT INTO works (source_id, source_record_id, title, content_hash, "
+                "items_hash) VALUES (%s, %s, %s, 'c', 'i') RETURNING id",
+                (sid, f"{g}-{b}", f"book {g}-{b}")).fetchone()[0]
+            conn.execute("INSERT INTO items (work_id, barcode, collection) "
+                         "VALUES (%s, %s, %s)", (wid, f"B{wid}", f"G{g}"))
+            v = centres[g] + 0.2 * rng.normal(size=16)
+            v = (v / np.linalg.norm(v)).astype(np.float32)
+            conn.execute("INSERT INTO embeddings (work_id, vector, dimensions, model, "
+                         "embedder_version, source_hash) VALUES (%s, %s, 16, 'm', 1, 'h')",
+                         (wid, v.tolist()))
+            works.append((wid, g))
+    by_genre = {g: [w for w, gg in works if gg == g] for g in range(genres)}
+    with conn.cursor() as cur:
+        with cur.copy("COPY ratings (source_id, patron_ref, work_id, rating, reviewed) "
+                      "FROM STDIN") as cp:
+            for reader in range(n_readers):
+                g = reader % genres
+                for w in rng.choice(by_genre[g], size=per_reader, replace=False):
+                    cp.write_row((sid, f"p{reader:04d}", int(w),
+                                  int(rng.choice([3, 4, 5])), False))
+    conn.commit()
+    return conn, sid
+
+
+@pytest.fixture
+def library():
+    conn, sid = planted_library()
     yield sid
     conn.close()
 

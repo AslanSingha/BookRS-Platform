@@ -332,24 +332,41 @@ def load_embeddings(conn, source_id: int, works: np.ndarray
     without one keeps a zero row: it contributes nothing to a reader's
     profile and scores zero against every profile, which is what having
     no text should mean.
+
+    Read as float32 arrays, a page at a time, and only for these works:
+    the full UCSD catalogue holds 883,468 vectors, which as Python lists
+    would need about 11 GB.
     """
-    rows = conn.execute(
-        "SELECT e.work_id, e.vector, e.model FROM embeddings e "
-        "JOIN works w ON w.id = e.work_id WHERE w.source_id = %s",
-        (source_id,)).fetchall()
+    from bookrs.db.arrays import vector_cursor
+
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS _vector_works (work_id bigint PRIMARY KEY)")
+    conn.execute("TRUNCATE _vector_works")
+    with conn.cursor() as cur:
+        with cur.copy("COPY _vector_works (work_id) FROM STDIN") as cp:
+            for wid in np.unique(np.asarray(works, dtype=np.int64)):
+                cp.write_row((int(wid),))
     where = {int(w): n for n, w in enumerate(works)}
-    rows = [r for r in rows if r[0] in where]
-    if not rows:
+    matrix, found, models = None, 0, set()
+    with conn.transaction(), vector_cursor(conn, "evaluation_vectors") as cur:
+        cur.itersize = 5_000
+        cur.execute("SELECT e.work_id, e.vector, e.model FROM embeddings e "
+                    "JOIN _vector_works s ON s.work_id = e.work_id "
+                    "JOIN works w ON w.id = e.work_id WHERE w.source_id = %s",
+                    (source_id,))
+        for work_id, vector, model in cur:
+            if matrix is None:
+                matrix = np.zeros((len(works), len(vector)), dtype=np.float32)
+            models.add(model)
+            if len(vector) == matrix.shape[1]:
+                matrix[where[int(work_id)]] = vector
+                found += 1
+    if matrix is None:
         return np.zeros((len(works), 0), dtype=np.float32), 0, ""
-    models = sorted({r[2] for r in rows})
     if len(models) > 1:
         raise SystemExit(f"embeddings for source {source_id} come from more than "
-                         f"one model ({', '.join(models)}); vectors from different "
-                         "models are not comparable. Re-embed the source.")
-    matrix = np.zeros((len(works), len(rows[0][1])), dtype=np.float32)
-    for work_id, vector, _ in rows:
-        matrix[where[work_id]] = vector
-    return matrix, len(rows), models[0]
+                         f"one model ({', '.join(sorted(models))}); vectors from "
+                         "different models are not comparable. Re-embed the source.")
+    return matrix, found, models.pop()
 
 
 def content_scores(train_binary: csr_matrix, n_train: np.ndarray,

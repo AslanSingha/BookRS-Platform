@@ -58,7 +58,8 @@ import numpy as np
 from scipy.sparse import csr_matrix
 
 from bookrs.evaluation.thesis import (
-    CONFIDENCE, blend, content_scores, fit, load, restrict, slice_works, split,
+    CONFIDENCE, blend, content_scores, fit, load, load_embeddings, restrict,
+    slice_works, split,
 )
 
 log = logging.getLogger("bookrs.evaluation")
@@ -201,30 +202,6 @@ def _works_table(conn, works: np.ndarray) -> None:
         with cur.copy("COPY _revised_works (work_id) FROM STDIN") as cp:
             for wid in works:
                 cp.write_row((int(wid),))
-
-
-def load_vectors(conn, works: np.ndarray) -> tuple[np.ndarray, int]:
-    """Content vectors for these works, in their order; zero rows where
-    a work has none. Read as float32 arrays, a page at a time: at the
-    full catalogue there are hundreds of thousands."""
-    from bookrs.db.arrays import vector_cursor
-
-    _works_table(conn, works)
-    where = {int(w): n for n, w in enumerate(works)}
-    matrix, found = None, 0
-    with conn.transaction(), vector_cursor(conn, "revised_vectors") as cur:
-        cur.itersize = 5_000
-        cur.execute("SELECT e.work_id, e.vector FROM embeddings e "
-                    "JOIN _revised_works s ON s.work_id = e.work_id")
-        for work_id, vector in cur:
-            if matrix is None:
-                matrix = np.zeros((len(works), len(vector)), dtype=np.float32)
-            if len(vector) == matrix.shape[1]:
-                matrix[where[work_id]] = vector
-                found += 1
-    if matrix is None:
-        return np.zeros((len(works), 0), dtype=np.float32), 0
-    return matrix, found
 
 
 def load_genres(conn, works: np.ndarray) -> tuple[np.ndarray, list[str]]:
@@ -437,7 +414,7 @@ def main(argv: list[str] | None = None) -> int:
         data = load(conn, a.source_id,
                     slice_works(conn, a.source_id, a.slice) if a.slice else None)
         data = restrict(data, a.min_ratings)
-        vectors, n_vectors = load_vectors(conn, data.works)
+        vectors, n_vectors, _ = load_embeddings(conn, a.source_id, data.works)
         genre, genre_names = load_genres(conn, data.works)
     n_readers, n_works = len(data.patrons), len(data.works)
     log.info("%d ratings, %d readers, %d books, %d with a vector, %d with a genre; "

@@ -141,3 +141,29 @@ class TestEndToEnd:
             # 12 of the 22 unseen books in the group are targets.
             assert got.p10 > 0.4, gram_or_none is None
             assert got.p10 > 3 * popular.p10
+
+
+class TestTheWholeRun:
+    def test_new_readers_with_the_revised_measures(self, capsys, monkeypatch):
+        """Readers who each read one genre, shown to a model that never saw
+        them: every policy that uses their ratings must find their genre,
+        and the table must carry the revised measures."""
+        from test_evaluation_revised import DATABASE_URL, planted_library
+
+        from bookrs.evaluation import coldstart
+
+        conn, sid = planted_library(per_reader=28)
+        conn.close()
+        monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
+        assert coldstart.main(["--source-id", str(sid), "--factors", "16",
+                               "--cold-readers", "200"]) == 0
+        text = capsys.readouterr().out
+        for title in ("P@10, any held-out rating", "P@10, liked = 4 or 5",
+                      "Leave one out: HR@10", "Genre match", "the platform's stages"):
+            assert title in text, title
+        genre_rows = text.split("Genre match")[1].split("\n")
+        platform = next(r for r in genre_rows if "the platform's stages" in r)
+        popular = next(r for r in genre_rows if "most-rated books" in r)
+        # A multiple of a random list: the platform finds the genre from
+        # three books on; the most-rated list knows no genre.
+        assert float(platform.split()[-1]) > 3.0 > 1.5 > float(popular.split()[-1])
