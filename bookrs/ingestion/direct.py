@@ -1,7 +1,7 @@
 """Read, read-only, the ratings and review flags a Koha library holds.
 
 Koha collects patron star ratings and written reviews, and offers no
-REST route that returns either (docs/marc-field-analysis.md). They are
+REST route that returns either. They are
 read here from the two tables that hold them. The catalogue itself is
 read by ``koha_db.py`` in the same way; between them the two modules are
 everything this service needs from a library to run the thesis's model:
@@ -67,7 +67,7 @@ import os
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta, timezone
 
-from bookrs.ingestion.circulation import patron_reference
+from bookrs.ingestion.patrons import patron_reference
 
 log = logging.getLogger("bookrs.ingestion.direct")
 

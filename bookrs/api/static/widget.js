@@ -38,16 +38,9 @@
    * An explicit data-heading always wins: a library that has chosen its
    * own wording knows its own catalogue. */
   var HEADING = script.getAttribute("data-heading");
-  /* Three things differ between library systems, and nothing else does.
-   * Defaults are Koha's, so an existing installation is unaffected.
-   *
-   * PMB, whose OPAC takes the same snippet through its biblio_main_header
-   * parameter rather than Koha's OPACUserJS:
-   *   data-record-param="id"
-   *   data-record-prefix="oai:PMBTEST:"
-   *   data-record-url="/pmb/opac_css/index.php?lvl=notice_display&id={id}"
-   *   data-mount="#main"
-   * The prefix is the installation's OAI identifier, not a constant. */
+  /* Where a record page keeps its id, and how to link to one. The
+   * defaults are Koha's OPAC; the attributes exist for an OPAC whose
+   * pages are laid out differently. */
   var RECORD_PARAM = script.getAttribute("data-record-param") || "biblionumber";
   var RECORD_PREFIX = script.getAttribute("data-record-prefix") || "";
   var RECORD_URL = script.getAttribute("data-record-url")
@@ -63,9 +56,9 @@
   var NORESULTS_SEL = script.getAttribute("data-noresults") || "#numresults";
   var RESULTS_SEL = script.getAttribute("data-results") || "#userresults";
   var MIN_SCORE = parseFloat(script.getAttribute("data-min-score") || "0.55");
-  /* Some catalogues search by POST, so the query is not in the URL at
-   * all -- PMB is one. They do re-fill the search box with the term, so
-   * the page still carries it; this selector says where to read it. */
+  /* A catalogue that searches by POST has no query in the URL. It does
+   * re-fill the search box with the term, so the page still carries it;
+   * this selector says where to read it. Koha does not need it. */
   var QUERY_INPUT = script.getAttribute("data-query-input") || "";
   var HEADING_RESCUE = script.getAttribute("data-heading-rescue") || "Closest by meaning";
   var HEADING_RELATED = script.getAttribute("data-heading-related") || "Also related by subject";
@@ -151,8 +144,8 @@
     /* Availability comes from the last catalogue sync, not a live
      * check, so it is described as "on the shelf" rather than promised
      * as current. */
-    /* Absent, not zero. A source whose export carries no item fields --
-     * PMB's OAI is one -- says nothing about holdings, and rendering
+    /* Absent, not zero. A source that carries no item fields says
+     * nothing about holdings, and rendering
      * that as "No copies" asserts something the library never
      * published. Zero copies from a source that does publish holdings
      * is a real catalogue-only record and still shown. */

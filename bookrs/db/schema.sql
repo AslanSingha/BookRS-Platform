@@ -1,9 +1,8 @@
 -- BookRS-Platform schema.
 --
 -- Column types and sizes follow measurements against real Koha
--- catalogues (436 MARC21 records, 4,849 UNIMARC); see
--- docs/marc-field-analysis.md. Where a measured maximum exists it is
--- noted, with headroom above it.
+-- catalogues. Where a measured maximum exists it is noted, with
+-- headroom above it.
 
 -- Trigram matching for the exact/keyword endpoint, and accent-blind
 -- comparison. Both ship with the stock postgres image, so a library

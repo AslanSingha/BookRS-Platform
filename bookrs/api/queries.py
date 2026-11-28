@@ -104,9 +104,7 @@ _SELECT = """
            -- from a source that does is a real catalogue-only record --
            -- on-order, electronic, reference. Zero copies from a source
            -- that does not is an absence of data, and reporting it as
-           -- "No copies" states something the export never said. PMB's
-           -- OAI carries no item fields, so every PMB record is the
-           -- second case.
+           -- "No copies" states something the source never said.
            -- NULL until a source's first harvest completes, and NULL
            -- for anything harvested before this column existed. Unknown
            -- must not mean "no holdings": that would silently drop the

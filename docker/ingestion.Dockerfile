@@ -1,12 +1,13 @@
 # BookRS-Platform — ingestion service
 #
-# Harvests bibliographic records from a library's ILS over OAI-PMH.
+# Reads a Koha library's catalogue, ratings and review flags from its
+# database, read-only (bookrs/ingestion/koha_db.py, direct.py).
 # Python 3.13 (not 3.14) because several pinned dependencies do not yet
 # publish wheels for 3.14; revisit once they do.
 FROM python:3.13-slim
 
-# Non-root by default. This container reaches out to a library's
-# production OAI endpoint, so it gets no more privilege than it needs.
+# Non-root by default. This container reaches a library's production
+# database, so it gets no more privilege than it needs.
 RUN useradd --create-home --uid 1000 bookrs
 
 WORKDIR /app
@@ -20,5 +21,5 @@ COPY tests/ ./tests/
 
 USER bookrs
 
-# No CMD yet — nothing to run until the harvest entrypoint exists.
-# Until then this image is driven via `docker compose run`.
+# No CMD: the scheduler (bookrs/schedule.py) or `docker compose run`
+# says what to run.

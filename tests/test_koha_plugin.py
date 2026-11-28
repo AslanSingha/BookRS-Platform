@@ -27,7 +27,7 @@ import pytest
 psycopg = pytest.importorskip("psycopg")
 pytest.importorskip("uvicorn")
 
-from bookrs.ingestion.circulation import patron_reference
+from bookrs.ingestion.patrons import patron_reference
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "koha-plugin" / "t" / "controller.pl"

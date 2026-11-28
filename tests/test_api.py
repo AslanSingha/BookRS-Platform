@@ -111,7 +111,7 @@ class TestAvailability:
             "is a real catalogue-only record rather than missing data")
 
     def test_source_that_publishes_no_holdings(self, conn):
-        """PMB's OAI export carries no item fields at all. Zero copies
+        """A source that publishes no item fields at all. Zero copies
         from such a source is an absence of data, not a statement that
         the library holds none, and the API omits availability entirely
         rather than letting the widget report 'No copies'."""

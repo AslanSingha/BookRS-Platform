@@ -23,7 +23,7 @@ title is visible -- coverage metrics report it. A transliteration looks
 like ordinary text, so the embedder encodes it confidently into a vector
 that means very little, because "Ma'amar sihat hulin" is not a string in
 any language the model was trained on. The multilingual model was
-selected on measured evidence (see docs/marc-field-analysis.md 13) and
+selected on measured evidence and
 would, on exactly the records that justified it, receive text it cannot
 use.
 

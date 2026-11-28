@@ -23,13 +23,10 @@ services:
       retries: 20
 
   ingestion:
-    # Two networks, because the direct reader (bookrs/ingestion/direct.py)
-    # needs to reach the library's own database and OAI-PMH does not.
-    # That asymmetry is a deployment fact worth noticing: this service can
-    # harvest a catalogue from anywhere that can reach the OPAC over HTTP,
-    # but reading what the API does not expose means sitting next to the
-    # database. koha-net is declared external and optional -- a deployment
-    # without it loses only the direct channel.
+    # Two networks: the platform's own database on default, and Koha's on
+    # koha-net. Everything is read from Koha's database
+    # (bookrs/ingestion/koha_db.py and direct.py), read-only, so this
+    # service sits next to it.
     networks: [default, koha-net]
     depends_on:
       db:
@@ -45,15 +42,11 @@ services:
       # Operator-supplied. Never derived from the repository's own
       # advertised baseURL, which Koha reports incorrectly.
       DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs"
-      # Circulation harvest (python -m bookrs.ingestion.circulation). The
-      # secret keys the patron HMAC; set it once per deployment and keep it.
-      KOHA_REST_URL: "${KOHA_REST_URL:-http://host.docker.internal:8080}"
-      KOHA_REST_USER: "${KOHA_REST_USER:-}"
-      KOHA_REST_PASSWORD: "${KOHA_REST_PASSWORD:-}"
+      # Keys the patron HMAC (bookrs/ingestion/patrons.py); set it once per
+      # deployment and keep it.
       BOOKRS_PATRON_SECRET: "${BOOKRS_PATRON_SECRET:-}"
       # Separate database: the loader tests truncate every table.
       TEST_DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs_test"
-      OAI_BASE_URL: "${OAI_BASE_URL:-http://host.docker.internal:8080/cgi-bin/koha/oai.pl}"
     volumes:
       # Bind-mounted during development so edits apply without rebuilding.
       - ./bookrs:/app/bookrs:ro
@@ -96,12 +89,10 @@ services:
     environment:
       DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs"
       TEST_DATABASE_URL: "postgresql://bookrs:${POSTGRES_PASSWORD:-bookrs_dev}@db:5432/bookrs_test"
-      # The library's OPAC origins, comma-separated. A real library has
-      # one; both Koha instances are listed here because this setup runs
-      # MARC21 and UNIMARC on different hostnames and the widget is
-      # installed in both. A missing origin fails in the browser with no
-      # server-side error: the panel simply never appears.
-      BOOKRS_ALLOWED_ORIGINS: "${BOOKRS_ALLOWED_ORIGINS:-http://localhost:8080,http://unimarc.localhost,http://localhost:8090}"
+      # The library's OPAC origin(s), comma-separated. A missing origin
+      # fails in the browser with no server-side error: the panel simply
+      # never appears.
+      BOOKRS_ALLOWED_ORIGINS: "${BOOKRS_ALLOWED_ORIGINS:-http://localhost:8080}"
       BOOKRS_ONNX_DIR: "/models/minilm-onnx/${BOOKRS_ONNX_VARIANT:-int8}"
       # Shared with the Koha plugin only. Enables /patrons/me/recommendations,
       # which Koha calls server to server for the logged-in patron; unset,

@@ -15,27 +15,28 @@ class TestApplicationPoints:
     """Where migrations run, and why it is more than one place.
 
     A library upgrading pulls a new version and restarts its services.
-    The API comes back immediately; the next harvest may be hours away.
-    If only the harvest applied migrations, the API would spend that
-    window querying columns that do not exist.
+    The API comes back immediately; the next read of Koha may be hours
+    away. If only the readers applied migrations, the API would spend
+    that window querying columns that do not exist.
     """
 
     def _source(self, path):
         return pathlib.Path(path).read_text(encoding="utf-8")
 
-    def test_harvest_cli_applies_migrations(self):
-        src = self._source("bookrs/ingestion/cli.py")
-        assert "apply_migrations(conn)" in src
+    @pytest.mark.parametrize("path", ["bookrs/ingestion/koha_db.py",
+                                      "bookrs/ingestion/direct.py"])
+    def test_the_koha_readers_apply_migrations(self, path):
+        assert "apply_migrations(conn)" in self._source(path)
 
     def test_api_applies_migrations_at_startup(self):
         """Not a style preference. Removing this reintroduces an
         upgrade-ordering hazard that no test would otherwise catch,
         because it only appears between a version bump and the next
-        harvest."""
+        read of Koha."""
         src = self._source("bookrs/api/main.py")
         assert "apply_migrations(conn)" in src, (
             "the API no longer migrates at startup; a library upgrading "
-            "would query an unmigrated schema until its next harvest"
+            "would query an unmigrated schema until its next read of Koha"
         )
 
     def test_the_api_does_not_import_implicit(self):

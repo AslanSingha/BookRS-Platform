@@ -391,7 +391,7 @@ def thesis_readers(path: str, borrower_map: str, secret: str,
     the only way from a borrower to a ``patron_ref`` and the reason the
     secret is needed here.
     """
-    from bookrs.ingestion.circulation import patron_reference
+    from bookrs.ingestion.patrons import patron_reference
 
     borrower = {}
     with open(borrower_map, encoding="utf-8") as fh:

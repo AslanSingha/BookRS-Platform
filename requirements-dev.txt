@@ -1,7 +1,5 @@
-# Ingestion adapter — minimal, deliberately
-httpx==0.27.2          # HTTP client; sync + async, better timeout handling than requests
+# Ingestion (reading Koha) — minimal, deliberately
 pytest==8.3.3
-pytest-httpx==0.30.0   # mock OAI responses without a live Koha
 psycopg[binary]==3.2.3  # PostgreSQL driver; binary avoids a build toolchain
 
 # Read-only reads from a library database for what its API does not

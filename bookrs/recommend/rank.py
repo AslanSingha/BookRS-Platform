@@ -14,8 +14,8 @@ That is a response to a measured failure rather than a preference. On
 generated circulation the factors carry a positive co-borrowing signal
 (+0.221 between co-borrowed pairs and unrelated ones) while the nearest
 neighbours of a Springsteen biography are a special-education
-dissemination model and two C++ books -- see
-``docs/marc-field-analysis.md`` 14.7. That happened because the
+dissemination model and two C++ books (measured on an earlier
+Open Library test catalogue). That happened because the
 collaborative layer was used as the candidate source. A re-ranker
 bounds the damage: with a noisy signal it shuffles plausible results,
 where a retriever surfaces implausible ones.

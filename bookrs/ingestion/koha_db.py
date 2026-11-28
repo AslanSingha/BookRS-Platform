@@ -1,47 +1,41 @@
 """Read a Koha catalogue from its own database, read-only.
 
-The harvest path (``bookrs/ingestion/``) reads cataloguing over OAI-PMH
-and parses MARC. This reads the same catalogue from Koha's tables as
-columns. Both produce rows in ``works`` and ``items``; everything
-downstream — embedding, factorisation, ranking, the widget — does not
-know or care which produced them.
+This is how the platform learns the catalogue: from Koha's tables, as
+columns. It fills ``works`` and ``items``; ``direct.py`` reads the
+ratings and review flags the same way. Everything downstream —
+embedding, factorisation, ranking, the OPAC pages — reads only those.
 
 **Every statement here is a SELECT.** Nothing in this module writes to
 the library's database, and the account it connects with should be
 read-only. The code is not what stands between this service and a
 library's data; the grant is. A deployment should create a user with
-SELECT on the five tables named below and nothing else.
+SELECT on the tables named below and nothing else.
 
-What this path gains:
+What reading the database gives:
 
 * **No MARC parsing.** ``biblio`` and ``biblioitems`` carry title,
   subtitle, author, abstract, ISBN, publication year and publisher as
-  columns. Flavour detection, field maps and alternate-script
-  resolution are not needed, because there is no record to interpret.
-* **Holdings are current, not harvested.** ``items.onloan`` is the live
-  circulation state rather than a MARC 952 subfield written at export
-  time.
+  columns.
+* **Current holdings.** ``items.onloan`` is the live circulation state.
 * **Incremental sync filters in SQL.** ``biblio.timestamp`` updates on
   modification, so a sync can ask for what changed rather than fetching
   everything and comparing hashes. The hash is still computed and
   stored, because a timestamp that moves without the bibliography
   changing is a known Koha behaviour (a checkout touches it).
 
-What this path loses, and it is not small:
+What it costs:
 
 * **Subject headings.** Koha stores them in the MARC record and indexes
   them for search; there is no subjects column and no subjects table.
-  They exist only inside ``biblio_metadata.metadata`` as MARCXML.
-  Reading them would mean parsing MARC from a different source, which
-  is what this path exists to avoid, so ``works.subjects`` is left
-  empty here. The content layer runs on title, author and abstract.
+  They exist only inside ``biblio_metadata.metadata`` as MARCXML, so
+  ``works.subjects`` is left empty here. The content layer runs on
+  title, author and abstract.
 * **Portability.** A database schema carries no compatibility promise
-  across versions, where OAI-PMH does. This module is written against
-  Koha 24.11 and should be expected to need attention on an upgrade.
-* **Deployment adjacency.** OAI-PMH is HTTP and reachable over any route
-  a library permits. This needs network access to the database itself,
-  which a library does not expose — in development the harvester has to
-  join Koha's own container network to reach it.
+  across versions. This module is written against Koha 24.11 and should
+  be expected to need attention on an upgrade.
+* **Deployment adjacency.** This needs network access to the database
+  itself, which a library does not expose to the internet: the platform
+  runs beside Koha, on its network.
 
     docker compose run --rm ingestion python -m bookrs.ingestion.koha_db \
         --source-id 1 --url 'mysql://ro:pw@kohadev-db-1:3306/koha_kohadev'
@@ -73,8 +67,7 @@ class DbWork:
     def content_hash(self) -> str:
         """Over the bibliographic fields only, excluding holdings.
 
-        Same split as the harvest path: a change to a record's
-        description should re-embed it, a change to where a copy sits
+        A change to a record's description should re-embed it, a change to where a copy sits
         on a shelf should not.
         """
         parts = [self.title, "|".join(self.authors), self.summary,
@@ -157,8 +150,7 @@ BATCH = 5_000
 def _split_authors(author: str | None) -> list[str]:
     """Koha's biblio.author is one free-text string.
 
-    MARC separates 100 from 700, and the harvest path keeps that
-    distinction. Here there is one column, so the best available
+    MARC separates 100 from 700; here there is one column, so the best available
     reading is to treat it as a single name rather than guess at
     delimiters -- a comma in "Heylin, Clinton" is part of the name, not
     a separator, and splitting on it would produce two authors from one
@@ -476,7 +468,7 @@ def read_loans(conn, secret: str, include_history: bool = True) -> list[DbLoan]:
     unusable there. Current loans alone are a thin signal, but they are
     a signal.
     """
-    from bookrs.ingestion.circulation import patron_reference
+    from bookrs.ingestion.patrons import patron_reference
 
     out: list[DbLoan] = []
     tables = ["issues"] + (["old_issues"] if include_history else [])
@@ -663,9 +655,7 @@ def main() -> int:
                  lstats["historical"], lstats["inserted"], lstats["updated"],
                  lstats["unresolved"])
     if mode != "changes":
-        log.info("subjects are empty on this path: Koha keeps them in the MARC "
-                 "record only, and reading them would mean parsing MARC from the "
-                 "database instead of from OAI-PMH")
+        log.info("subjects are empty: Koha keeps them in the MARC record only")
     return 0
 
 

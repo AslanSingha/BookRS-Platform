@@ -47,8 +47,7 @@ patron's hashed reference query a shadow of that person's borrowing
 pattern. That is a new kind of exposure pseudonymisation does not cover,
 and it needs a real authentication decision before this is wired to
 anything a network can reach -- not a decision to make inside a ranking
-module. See ``docs/marc-field-analysis.md`` for where that discussion
-belongs once it happens.
+module.
 """
 
 from __future__ import annotations

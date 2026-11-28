@@ -1,287 +1,183 @@
 # BookRS-Platform
 
-> A recommendation service for libraries running open-source ILS
-> platforms — Koha, PMB, and other MARC / OAI-PMH-compliant systems.
+> Book recommendations inside a Koha library's own OPAC, learned from
+> Koha's own data, which the platform only reads.
 
-**Status: working, not yet piloted.** Catalogue ingestion, embedding,
-semantic search and the OPAC widget run end to end against three live
-library systems — Koha in both MARC flavours and a self-hosted PMB instance
-(`docs/pmb-setup.md`) — and a patron viewing a record sees related books
-from the library's own holdings. Collaborative filtering is built and
-wired in, including per-patron folding-in, but it has only ever run on
-generated circulation: no library has deployed this yet, and nothing
-here demonstrates recommendation *quality*. That needs real borrowing
-history, which only a pilot produces. Search quality *is* measured:
-see [Evaluation](#evaluation).
+**Status: working on a test library, not yet piloted.** A
+koha-testing-docker Koha holds the UCSD Goodreads catalogue used in the
+thesis: the 2,000-book slice with 446,664 readers and 16.3 million
+ratings, with the full 883,468-book catalogue being loaded. A patron
+logged in to the OPAC gets recommendations from their own ratings, search
+by meaning, and similar books on every record page; a new patron's
+ratings change what they are shown within minutes. See
+[Evaluation](#evaluation) for what is measured.
 
 ---
 
 ## What this is
 
-BookRS-Platform is **software a library self-hosts**, not a service
-operated by a third party. A library's IT staff clone this repository,
-point it at their own ILS, and run it on their own infrastructure via
-Docker Compose. Catalogue data never leaves the library's control.
+BookRS-Platform is **software a library self-hosts beside its Koha**. It
+reads Koha's database, learns from it, and puts the results into Koha's
+own OPAC through a Koha plugin. Nothing leaves the library.
 
-The service harvests bibliographic records from the library's existing
-system over OAI-PMH, builds semantic recommendation models from them,
-and exposes those through an API a library can call from its public
-catalogue.
+**It only reads.** Every statement it sends to Koha's database is a
+SELECT, and a deployment gives it an account with SELECT on the tables it
+reads and nothing else:
 
-**Integration is read-only.** BookRS-Platform is never given write —
-or even direct read — access to a library's production database.
+| Koha table | What is read |
+|---|---|
+| `biblio`, `biblioitems` | each book: title, author, description, ISBN, year, publisher |
+| `items` | copies, availability, collection (the genre, in the test library) |
+| `ratings` | each patron's star ratings, given in the OPAC |
+| `reviews` | only whether a patron also wrote a review (the δ in the confidence) |
+| `issues`, `old_issues` | loans, optionally (`koha_db --loans`) |
+
+Patrons are never stored by number: each borrower number is replaced by
+a keyed hash (`bookrs/ingestion/patrons.py`).
 
 ## Prior work
 
-Building on research and findings from
-**[BookRS-System](https://github.com/AslanSingha/BookRS-System)** —
+Building on **[BookRS-System](https://github.com/AslanSingha/BookRS-System)**,
 RIN SINGH's Engineering thesis at the Institute of Technology of
 Cambodia (2026), supervised by M. SOK Kimheng. That system combined
-SBERT semantic embeddings with ALS collaborative filtering.
+SBERT semantic embeddings with ALS collaborative filtering, behind a
+Vue prototype.
 
 BookRS-Platform is a **separate codebase**, with its own schema,
-integration layer and deployment model.
+integration layer and deployment model. The thesis repository is
+reference only.
 
 ## Differences from BookRS-System
 
 | | BookRS-System | BookRS-Platform |
 |---|---|---|
-| Data source | Static research dataset | Live ILS via OAI-PMH |
-| Schema | Books table | Bibliographic / item separation |
-| Signals | Explicit ratings | Implicit circulation intensity |
-| Record format | Normalised CSV | MARC21, UNIMARC, PMB XML |
+| Data source | Static research dataset | Koha's database, read-only |
+| Interface | Vue prototype | Koha's own OPAC, through a plugin |
+| Schema | Books table | Works / items separation |
+| Signal | Ratings, c = 1 + 2r + 3δ | The same ratings, read from Koha |
+| New readers | Four stages | Three stages, chosen by measurement |
 | Embedding model | English-only | Multilingual |
-| Deployment | Local development | Docker Compose, self-hosted |
+| Updating | Manual | A scheduler: read, embed, retrain on set cadences |
 
-**Bibliographic / item separation.** Real library data needs two layers:
-a `works` record (the intellectual work — title, authors, subject
-headings, one embedding) and `items` records (physical copies — branch,
-call number, availability). Multiple copies of a book are real
-inventory, not duplicates to merge.
+**Works and items.** A `works` record is the book (title, authors,
+description, one embedding); `items` are its physical copies (branch,
+availability, collection). Several copies of a book are real inventory,
+not duplicates to merge.
 
-**The preference signal is circulation, not ratings.** Circulation
-records that a book was borrowed, not whether it was enjoyed, so
-implicit signals are weighted through a confidence formula built from
-borrowing *intensity* — loans, renewals, repeat borrows — rather than
-direction. Its weights are deployment configuration, because the right
-values are an empirical question no synthetic data can answer. Koha does
-collect patron star ratings natively, but offers no way to read them
-(see "Not yet built"), so they remain schema-ready and unused.
-
-**Graceful degradation on sparse metadata.** Roughly a third of a real
-catalogue carries nothing beyond a title. The content-based layer is
-designed around that constraint rather than assuming rich descriptions.
-
-**Circulation re-ranks; it does not retrieve.** Recommendations are
-drawn from the semantic layer, and borrowing history reorders them. A
-work the embeddings did not consider related cannot be promoted into the
-results by co-borrowing alone — which is what put two C++ books beside a
-Springsteen biography when the factors were queried directly. The trade
-is deliberate and costly: works that share readers but not vocabulary
-are exactly what this cannot surface, and the candidate pool is
-configurable so a library with real circulation can widen it.
-
-The collaborative layer also declines to act on too little evidence.
-Factors resting on very few borrowers are excluded, and where too few
-candidates carry any, the layer abstains rather than imputing a value
-from one or two observations. A catalogue with no circulation gets the
-content-only behaviour through the same code path, not a separate one.
-See [`docs/marc-field-analysis.md`](docs/marc-field-analysis.md) §15.
+**Readers' ratings reorder; they do not retrieve.** Similar books are
+drawn by meaning, then reordered by ALS (0.7 meaning, 0.3 ALS). A book
+the embeddings did not consider related cannot be promoted by ratings
+alone. Factors resting on very few readers are excluded, and where too
+few candidates carry any, the ratings layer abstains.
 
 ## What runs today
 
 ```
-bookrs/ingestion    OAI-PMH harvest → MARC21/UNIMARC/PMB → normalised works
-                    circulation history → Koha REST API → pseudonymised loans
-bookrs/db           works, items, embeddings, ratings, loans, factors + loaders
+bookrs/ingestion    Koha's database, read-only → works, items, ratings, review flags
+bookrs/db           the platform's schema and its migrations
 bookrs/embedding    multilingual encoding → 384-dimensional vectors
-bookrs/recommend    confidence weighting → ALS → per-work latent factors
-                    hybrid ranking → content candidates, reordered
-bookrs/api          search, similarity, availability, health
+bookrs/recommend    confidence weighting → ALS → factors; folding-in per patron
+bookrs/evaluation   the thesis's protocol, cold start, generated readers, tuning
+bookrs/api          recommendations, search by meaning, similar books, health
+bookrs/schedule.py  read, embed and retrain on cadences set in .env
+koha-plugin/        the OPAC pages, and the patron's routes inside Koha
 ```
 
-Five Docker services: `db`, `ingestion`, `embedding`, `recommend`, `api`.
+Docker services: `db`, `ingestion`, `embedding`, `recommend`, `api`; the
+scheduler's `schedule-read`, `schedule-embed`, `schedule-refit` (profile
+`schedule`); `test`; and `fixture` (profile `fixture`, the only one that
+writes to Koha: it loads the UCSD test data).
 
 **Endpoints**
 
 | | |
 |---|---|
-| `GET /works/{id}/similar` | recommendations, with the signal behind each |
+| `GET /patrons/me/recommendations` | a patron's list, asked by Koha's plugin on their behalf |
+| `GET /patrons/me/search` | a patron's search by meaning, reordered by their ratings |
+| `GET /works/{id}/similar` | similar books, with the signal behind each |
+| `GET /works/popular` | the most-rated books |
 | `GET /search/semantic` | free-text search by meaning, with a score floor |
 | `GET /search/exact` | ISBN, title or author lookup |
 | `GET /works/{id}` | a single record with availability |
-| `GET /works/by-record-id/{id}` | resolve a library's own biblionumber |
-| `GET /widget.js` | the OPAC widget |
-| `GET /sources` | per-source harvest and coverage figures |
-| `GET /health` | catalogue size, embedding coverage, sync freshness |
-
-**Measured against a 125,333-work catalogue** harvested from three live
-instances — Koha MARC21 (50,436), Koha UNIMARC (54,849) and PMB
-(20,048), the bibliographic records drawn from Open Library:
-
-| | |
-|---|---|
-| Harvest | ~155 s for 20,048 records over 201 OAI pages |
-| Embedding | 41 works/sec on 6 CPU cores for records carrying summaries; 90–175/sec for title-and-subject records. First run only |
-| Similarity query | 8–12 ms |
-| Exact search | 4–22 ms |
-
-Extrapolating to a 300,000-record catalogue: roughly 30–55 minutes for
-the initial embedding run, once. Subsequent syncs touch only records
-whose bibliography actually changed.
+| `GET /works/by-record-id/{id}` | resolve Koha's biblionumber |
+| `GET /widget.js` | the OPAC script |
+| `GET /sources` | per-library counts: books read, embedded, factorised |
+| `GET /health` | totals, the vectors held, and each scheduled job's last run |
 
 ## Not yet built
 
-**Any evidence about recommendation quality.** Factorisation has only
-ever run on generated circulation. An earlier generator drew loans by
-popularity alone and produced neighbours no reader would accept, because
-it had no notion of subject — see
-[`docs/marc-field-analysis.md`](docs/marc-field-analysis.md) §14.6–14.7.
-The generator now gives each patron one to three subject
-interests drawn from the catalogue's own headings, and loans execute
-through Koha's own `AddIssue`, so co-borrowing reflects shared subjects
-rather than shared popularity. On the 50,436-work MARC21 catalogue that
-yields 6,390 interactions from 801 patrons over 1,924 works — about 4%
-of the catalogue, which is the real cold-start position of any library
-on day one, and why the content layer carries the system. The path runs end to end; that it recommends
-usefully is not established and cannot be until a library provides real
-borrowing history.
-
-**Duplicate record handling.** A catalogue's second copy of a work is
-often a second record, and the nearest neighbour of a book can be
-itself. No suppression rule is shipped: embeddings, ISBN, title-plus-
-author and publication year each fail on a case the others handle, and
-what separates a second *volume* from a second *edition* is `245$n`/`$p`,
-which ingestion does not yet extract. Hiding a real book is worse than
-showing a duplicate, so nothing is hidden. §15.4.
-
-**Patron ratings.** Koha collects them natively and enables them by
-default, but its REST API exposes no rating or review route. Reading
-them would require direct database access, which this design rules out,
-or a Koha plugin. The `ratings` table is present and unused.
-
-**Semantic search over free text.** Requires encoding the query, which
-means loading the embedding model into the public-facing service. The
-stored-vector endpoints above need no model, so this is a deliberate
-separate decision rather than an oversight.
-
-**Production hardening** — authentication, rate limiting, observability
-— which waits for a concrete pilot rather than being built
-speculatively.
+- **The thesis's other homepage sections:** Trending Now, Because you
+  rated, Because you searched, Readers like you, Popular in your
+  favourite genre; and browsing by genre.
+- **New books nobody has rated** get no ALS signal; only content can
+  place them. Not yet evaluated.
+- **One book under two titles** (*Philosopher's Stone* / *Sorcerer's
+  Stone*) still appears twice: editions are grouped by title and first
+  author.
+- **Retraining is not seeded**, so lists shift slightly between refits.
+- **Production hardening**: rate limiting and observability wait for a
+  pilot library.
 
 ## Evaluation
 
-Recommendation *quality* still needs a pilot. **Search quality does
-not**, and it is measured.
+Measured on the 2,000-book slice read from Koha (446,664 readers):
 
-Catalogue keyword search fails in recognisable ways, so the query set
-was built from the catalogue's own subject headings — independent of the
-recommender by construction — in the three ways it fails: a question in
-ordinary words, a topic phrase no title carries, and a transposed-letter
-typo. 120 queries, 40 of each, run through Koha's own Zebra search and
-through `/search/semantic` at a 0.55 floor (per-deployment
-configuration; 0.55 is the default)
-(`tools/build_query_set.py`, `tools/evaluate.py`).
+| Evaluation | Result |
+|---|---|
+| The thesis's protocol (80/20 per reader) | P@10 **0.2225** on the thesis's 2,000 readers, against 0.2259 reported; 0.1988 over all readers; 2.2× the most-rated baseline |
+| Cold start (readers withheld, 1–20 ratings revealed) | Full folding-in 0.179 at 20 ratings, against 0.090 for the thesis's version |
+| Generated readers with a known taste | ALS recommends books the reader would love 91% of the time with no noise, 70% at 50% noise |
+| Hyperparameter sweep | The thesis's k = 128, λ = 0.1, 10 iterations, c = 1 + 2r + 3δ confirmed |
 
-| Query class | Queries | Zebra found nothing | BookRS answered |
-|---|---|---|---|
-| Natural language | 40 | 19 | 19 (100%) |
-| Concept phrase | 40 | 20 | 20 (100%) |
-| Typo | 40 | 38 | 30 (79%) |
-| **All** | **120** | **77 (64%)** | **69 (90%)** |
+The held-out protocol is strict: a book the reader would love but never
+rated counts as wrong, so even perfect knowledge of every reader's taste
+scores only 0.29 on it. `bookrs.evaluation.revised` therefore scores the
+same model several ways, each beside its limit:
 
-Two things that number does not say:
+1. held-out books, liked = rated 4 or 5 (the main score), with the
+   ceiling P@10 is capped by, truncated recall and MAP@10;
+2. held-out books, any rating (the thesis's definition);
+3. leave one out: one liked book per reader, not capped by how many a
+   reader has held out;
+4. genre match: the share of the top 10 in the reader's own genres,
+   against a random list;
+5. beyond accuracy: catalogue coverage, recommendations outside the
+   most-rated tenth, novelty, diversity within a list;
+6. similar books: the share of a book's ten most similar that share its
+   genre, by meaning, by ALS and by the API's blend.
 
-- **Typos are the weak class, and that is expected.** A transposed
-  letter damages the embedding too; semantic search is not a spell
-  checker. The two techniques are complements — fuzzy matching for
-  misspellings, embeddings for meaning — and the trigram indexes that
-  `/search/exact` already uses are where a fallback for this class
-  would go. It is not wired to the rescue path today.
-- **A score floor does not protect against a meaningless query.**
-  `trsut` returns three short foreign-language titles at 0.91, 0.80 and
-  0.77: high scores, useless results. The floor separates weak matches
-  to a sensible question from strong ones. It cannot separate a question
-  from a non-question.
+It runs on the thesis's slice or on everything the library holds:
 
-**The threshold was calibrated, not chosen.** Across twenty queries run
-against the live catalogue, every sensible top result scored 0.579 or
-above and the two wrong ones scored 0.534 and 0.500. The floor sits
-between them.
-
-**Relevance is not scored here.** `tools/evaluate.py` writes a
-judgement sheet of query-suggestion pairs for a librarian to mark; a
-generated label would be the embedding grading its own output.
-
-## Evidence base
-
-Design decisions here are grounded in measurements against running Koha
-instances rather than documentation alone:
-
-**[`docs/marc-field-analysis.md`](docs/marc-field-analysis.md)** — field
-coverage, identifier semantics, holdings structure, circulation
-behaviour and model comparison, measured across both MARC flavours.
-
-Findings that shape the architecture:
-
-- **Metadata prefix and XML namespace do not identify MARC flavour.** A
-  UNIMARC Koha serves UNIMARC records under a prefix named `marc21`, in
-  the `MARC21/slim` namespace. Flavour is detected from record structure.
-- **Tag numbers collide between standards.** `100`, `300` and `020`
-  exist in both with unrelated meanings; a MARC21 field map applied to a
-  UNIMARC feed produces plausible nonsense rather than an error.
-- **Roughly a third of records have nothing but a title to embed** —
-  29.4% of MARC21 and 38.5% of UNIMARC records in the reference corpora.
-- **A legacy MARC-8 escape sequence makes an OAI page unparseable.** A
-  catalogue converted from MARC-8 keeps its character-set switches —
-  `ESC ( Q … ESC ( B` around a curly apostrophe. XML forbids `ESC` at
-  any encoding, so one apostrophe in one record aborted a
-  20,048-record harvest. The harvester now strips what XML forbids,
-  retries the parse, and logs how many characters it removed.
-- **An ILS can be incompatible with a current database default.** PMB
-  7.3.7 cannot insert into its own `notices` table under MariaDB 11.8's
-  default `STRICT_TRANS_TABLES`: a column with no default value. A 2020
-  application meeting a 2025 database default.
-- **Availability is a ranking problem, not only a display one.** Of
-  5,994 planned loans in the circulation generator, 2,044 could not
-  execute because the only copy was already out. A popular title is
-  unavailable precisely when it is popular — something no offline
-  metric captures, and the reason availability belongs in the score
-  rather than only in the card.
-- **Circulation activity drives incremental sync volume**, not
-  cataloguing. A checkout updates a record's OAI datestamp while leaving
-  its bibliographic content unchanged.
-- **A multilingual embedding model costs nothing on English.** Measured
-  by whether works sharing a subject heading embed closer together than
-  unrelated works: +0.604 against `all-MiniLM-L6-v2`'s +0.597 on
-  English, and +0.301 against +0.169 on French.
-- **Patron ratings exist but are not in the MARC record**, so reaching
-  them requires a second read channel alongside OAI-PMH.
+```bash
+# the 2,000-book slice the thesis and the report used
+docker compose run --rm -T -v "$PWD/data/ucsd:/data" recommend python -m bookrs.evaluation.revised \
+  --source-id 54 --slice /data/koha_biblios.tsv --json /data/revised-slice.json
+# everything the library holds (a sample of 20,000 readers, seeded)
+docker compose run --rm -T -v "$PWD/data/ucsd:/data" recommend python -m bookrs.evaluation.revised \
+  --source-id 54 --json /data/revised-full.json
+# the thesis's own protocol and numbers, reproduced
+docker compose run --rm -T -v "$PWD/data/ucsd:/data:ro" recommend python -m bookrs.evaluation.thesis \
+  --source-id 54 --slice /data/koha_biblios.tsv \
+  --thesis-readers /data/thesis_eval_users.txt --borrower-map /data/koha_borrowers.tsv
+```
 
 ## Running it
+
+Koha first: [`docs/koha-setup.md`](docs/koha-setup.md) starts the
+instance, installs the plugin and checks everything with
+`tools/demo.sh check`. Then the platform:
 
 ```bash
 git clone https://github.com/AslanSingha/BookRS-Platform.git
 cd BookRS-Platform
+cp .env.example .env     # KOHA_DB_URL, BOOKRS_SOURCE_ID, secrets, cadences
 docker compose up -d db api
+docker compose --profile schedule up -d
 ```
 
-Then harvest a catalogue and embed it:
-
-```bash
-OAI_BASE_URL=https://your-library.example/cgi-bin/koha/oai.pl \
-  docker compose run --rm ingestion python -m bookrs.ingestion.cli
-docker compose run --rm embedding python -m bookrs.embedding.cli
-```
-
-The embedding service downloads a 471 MB model on first run and caches
-it in a named volume.
-
-**Before harvesting, the library's Koha needs OAI-PMH enabled** — it is
-off by default — and, for holdings, an `OAI-PMH:ConfFile` declaring
-`include_items: 1`. Note that declaring a conf file also restricts the
-formats the endpoint offers, which can remove `oai_dc` for other
-harvesters. See `docs/marc-field-analysis.md` §3.
+The scheduler reads Koha, embeds and retrains on its own (see
+[Keeping it up to date](#keeping-it-up-to-date)). The embedding service
+downloads its model on first run and caches it in a named volume.
 
 ## Adding recommendations to the catalogue
 
@@ -300,8 +196,7 @@ interferes with the catalogue's own behaviour:
    never touched.
 
 Tiers 2 and 3 need to know where the query and the results live on the
-page, which differs between systems. The defaults are Koha's; PMB's
-values are given below.
+page. The defaults are Koha's.
 
 **1. Allow the OPAC's origin.** The widget runs on the catalogue, which
 is a different origin from this service, so the browser will not call it
@@ -352,12 +247,8 @@ the catalogue's own "no results" message, and `data-results` (default
 (default `0.55`) is the cosine floor for the rescue band; the related
 band uses that value plus 0.05.
 
-**A catalogue that searches by POST** — PMB is one — puts the query
-nowhere in the URL. Such systems do re-fill their search box with the
-term, so `data-query-input` names a selector to read it from
-(`input[name=user_query]` for PMB). Without a query from either source
-the widget does nothing, which is also how it tells a results page from
-a home page on systems where both share a path.
+Without a query in the URL (or, with `data-query-input`, in a search
+box) the widget does nothing on a search page.
 
 **Options.** `data-source-id` is required when more than one library is
 configured, because record identifiers are unique within a source rather
@@ -415,17 +306,6 @@ API.
 the widget *fetches* from this service. Either add its origin to
 `csp_header_value`, or proxy the API under the OPAC's own hostname so
 the request is same-origin.
-
-### PMB
-
-PMB has no plugin system and no `OPACUserJS`. The loader goes in the
-`biblio_main_header` OPAC parameter, which accepts HTML and renders it
-on record pages. PMB is **content-only by design**: its OAI export
-carries no item fields and it exposes no circulation API, so neither
-availability nor collaborative filtering is possible there. That is a
-property of the ILS, not a limitation of this service, and the widget
-degrades to content suggestions without announcing an absence. See
-[`docs/pmb-setup.md`](docs/pmb-setup.md).
 
 The widget fails silently. If the API is unreachable or the record is
 not in the catalogue yet, no panel appears and nothing is logged to the
@@ -522,11 +402,11 @@ docker compose --profile fixture run --rm fixture python tools/ucsd_full.py marc
 for f in data/ucsd-full/marc/ucsd-full-*.mrc; do
   n=$(basename "$f" .mrc); [ -f "data/ucsd-full/marc/$n.done" ] && continue
   echo "== $n $(date +%T)"
-  docker cp "$f" "kohadev-koha-1:/tmp/$n.mrc" &&
+  docker cp "$f" "kohadev-koha-1:/kohadevbox/$n.mrc" &&
   docker exec kohadev-koha-1 koha-shell kohadev -c \
-    "perl /kohadevbox/koha/misc/migration_tools/bulkmarcimport.pl -b -file /tmp/$n.mrc --commit 1000 -si" \
+    "perl /kohadevbox/koha/misc/migration_tools/bulkmarcimport.pl -b -file /kohadevbox/$n.mrc --commit 1000 -si" \
     > "data/ucsd-full/marc/$n.log" 2>&1 &&
-  docker exec kohadev-koha-1 rm -f "/tmp/$n.mrc" && touch "data/ucsd-full/marc/$n.done" ||
+  docker exec kohadev-koha-1 rm -f "/kohadevbox/$n.mrc" && touch "data/ucsd-full/marc/$n.done" ||
   { echo "stopped at $n: see data/ucsd-full/marc/$n.log"; break; }
 done
 docker exec kohadev-koha-1 koha-rebuild-zebra -b -f -v kohadev
